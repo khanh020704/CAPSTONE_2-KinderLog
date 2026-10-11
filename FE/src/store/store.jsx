@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { seed } from './seed'
 import { todayISO, uid } from '../lib/utils'
+import * as remote from './remote'
 
 const DB_KEY = 'kinderlog.db'
 const SESSION_KEY = 'kinderlog.session'
@@ -33,19 +34,55 @@ function loadSession() {
   }
 }
 
+function clearSession() {
+  sessionStorage.removeItem(SESSION_KEY)
+  localStorage.removeItem(SESSION_KEY)
+}
+
+// A session served by the backend gets its data from the API; every other session uses the demo data.
+function loadInitial() {
+  const session = loadSession()
+  if (!session?.remote) return { session, db: loadDb() }
+  const db = remote.restore(session)
+  if (db) return { session, db }
+  clearSession()
+  return { session: null, db: loadDb() }
+}
+
 const StoreContext = createContext(null)
 
 export function StoreProvider({ children }) {
-  const [db, setDb] = useState(loadDb)
-  const [session, setSession] = useState(loadSession)
+  const [initial] = useState(loadInitial)
+  const [db, setDb] = useState(initial.db)
+  const [session, setSession] = useState(initial.session)
 
   useEffect(() => {
+    // Data that came from the server is not kept in the browser.
+    if (session?.remote) return
     try {
       localStorage.setItem(DB_KEY, JSON.stringify(db))
     } catch {
       // storage full (large photos) or unavailable: the demo keeps working in memory
     }
-  }, [db])
+  }, [db, session])
+
+  // Sends what the pages changed to the backend.
+  useEffect(() => {
+    if (session?.remote) remote.sync(db, session)
+  }, [db, session])
+
+  // Loads messages, notifications and older records in the background.
+  useEffect(() => {
+    if (!session?.remote) return
+    const expired = () => {
+      remote.logout()
+      clearSession()
+      setSession(null)
+      setDb(loadDb())
+    }
+    return remote.start(db, setDb, expired)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session])
 
   const user = useMemo(() => {
     if (!session) return null
@@ -89,6 +126,16 @@ export function StoreProvider({ children }) {
   const login = useCallback(
     (role, phone, password, remember) => {
       const meta = ROLES[role]
+      if (remote.handles(role)) {
+        const res = remote.login(role, phone, password, remember)
+        if (!res.ok) return { ok: false, error: res.error }
+        const s = { role, id: res.id, remote: true }
+        clearSession()
+        ;(remember ? localStorage : sessionStorage).setItem(SESSION_KEY, JSON.stringify(s))
+        setDb(res.db)
+        setSession(s)
+        return { ok: true, home: meta.home }
+      }
       const rec = db[meta.coll].find((u) => u.phone === phone.trim())
       if (!rec || (db.passwords[rec.id] ?? DEMO_PASSWORD) !== password) {
         return { ok: false, error: 'Incorrect phone number or password.' }
@@ -113,9 +160,12 @@ export function StoreProvider({ children }) {
   )
 
   const logout = useCallback(() => {
-    sessionStorage.removeItem(SESSION_KEY)
-    localStorage.removeItem(SESSION_KEY)
+    clearSession()
     setSession(null)
+    if (remote.isActive()) {
+      remote.logout()
+      setDb(loadDb())
+    }
   }, [])
 
   const resetDemo = useCallback(() => setDb({ ...seed(), seededOn: todayISO() }), [])

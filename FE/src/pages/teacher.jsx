@@ -25,6 +25,7 @@ import {
   Users,
 } from 'lucide-react'
 import { attendanceCounts, attendanceOf, byId, classOfTeacher, journalOf, linksOfStudent, studentsOfClass, unreadMessages, useStore } from '../store/store'
+import * as remote from '../store/remote'
 import { JOURNAL_SECTIONS, JOURNAL_STATUS, dayLabel, fmtDate, fmtLongDate, greeting, norm, readFileAsDataURL, relTime, todayISO, uid } from '../lib/utils'
 import { JournalTimeline, SECTION_ICON } from '../components/Journal'
 import { Avatar, ConfirmDialog, EmptyState, Modal, PageHeader, PhotoTile, SearchInput, SegBar, Select, SkeletonCards, StatCard, StatusBadge, useFakeLoad, useToast } from '../components/ui'
@@ -589,10 +590,21 @@ function Recorder({ students, onDone, onCancel }) {
       return () => clearTimeout(t)
     }
     if (phase === 'processing') {
-      const t = setTimeout(() => {
-        const s = session.current
-        done.current({ ...draftFromTranscript([...s.finals, s.interim].filter(Boolean), students), audioUrl: s.audioUrl })
-      }, 900)
+      const s = session.current
+      const parts = [...s.finals, s.interim].filter(Boolean)
+      // With the backend connected, the whole recording goes to its AI, which sorts free speech into the
+      // journal structure. Without it, the keyword rules above are used.
+      if (remote.isActive()) {
+        let current = true
+        remote
+          .voiceDraft(parts.join('. '))
+          .then(({ transcript, sections, personal }) => current && done.current({ transcript, sections, personal, audioUrl: s.audioUrl }))
+          .catch((err) => current && fail(err.message))
+        return () => {
+          current = false
+        }
+      }
+      const t = setTimeout(() => done.current({ ...draftFromTranscript(parts, students), audioUrl: s.audioUrl }), 900)
       return () => clearTimeout(t)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
