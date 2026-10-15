@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { AlertCircle, BellOff, CheckCheck, Eye, EyeOff, KeyRound, LogOut, Pencil, ScrollText, ShieldCheck } from 'lucide-react'
-import { DEMO_PASSWORD, ROLES, childrenOf, classOfTeacher, byId, notificationsFor, useStore } from '../store/store'
+import { notificationsFor, useStore } from '../store/store'
+import { api } from '../lib/api'
+import { RELATIONSHIP, errorText, label } from '../lib/labels'
 import { fmtDateTime, norm, toISO } from '../lib/utils'
 import { FormFields, validateFields } from '../components/CrudPage'
 import { useLogout } from '../components/Shell'
@@ -23,37 +25,62 @@ import {
 
 const PROFILE_FIELDS = [
   { name: 'name', label: 'Full Name', required: true },
-  { name: 'phone', label: 'Phone', type: 'tel', required: true },
-  { name: 'email', label: 'Email', type: 'email', required: true },
+  { name: 'email', label: 'Email', type: 'email' },
+  { name: 'address', label: 'Address', full: true },
 ]
 
 export function ProfilePage() {
-  const { db, user, upsert, log } = useStore()
+  const { user, setProfile } = useStore()
   const toast = useToast()
   const [askLogout, logoutDialog] = useLogout()
   const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({})
   const [errors, setErrors] = useState({})
+  const [formError, setFormError] = useState('')
   const base = `/${user.role}`
+  const p = user.api
 
   const extra = {
     admin: [['System Role', 'Platform administration']],
-    principal: [['School', byId(db.schools, user.schoolId)?.name]],
-    teacher: [['Assigned Class', classOfTeacher(db, user.id)?.name || 'Not assigned']],
-    parent: childrenOf(db, user.id).map((c) => ['Child', `${c.name} — ${byId(db.classes, c.classId)?.name} (${c.relationship})`]),
+    principal: [['School', p.school?.name || 'Not assigned']],
+    teacher: [['Assigned Class', p.classes?.map((c) => c.name).join(', ') || 'Not assigned']],
+    parent: (p.children || []).map((c) => ['Child', `${c.fullName} — ${c.class?.name || ''} (${label(RELATIONSHIP, c.relationship)})`]),
   }[user.role]
 
-  const save = (e) => {
+  const save = async (e) => {
     e.preventDefault()
     const errs = validateFields(PROFILE_FIELDS, form)
-    if (!errs.phone && db[ROLES[user.role].coll].some((u) => u.phone === form.phone && u.id !== user.id)) errs.phone = 'This phone number is already in use.'
     setErrors(errs)
+    setFormError('')
     if (Object.keys(errs).length) return
-    upsert(ROLES[user.role].coll, { id: user.id, name: form.name.trim(), phone: form.phone.trim(), email: form.email.trim() })
-    log('Update', 'Profile', 'Profile information updated')
-    setEditing(false)
-    toast('Profile updated successfully.')
+    setSaving(true)
+    try {
+      const profile = await api.auth.updateProfile({
+        fullName: form.name.trim(),
+        email: form.email?.trim() || undefined,
+        address: form.address?.trim() || undefined,
+      })
+      setProfile(profile)
+      setEditing(false)
+      toast('Profile updated successfully.')
+    } catch (err) {
+      setFormError(errorText(err))
+    } finally {
+      setSaving(false)
+    }
   }
+
+  const rows = [
+    ['Full Name', user.name],
+    ['Phone', user.phone],
+    ['Email', user.email],
+    ['Address', user.address],
+    ['Role', user.roleLabel],
+    ...extra,
+    ['Account Status', user.status],
+    ['Last Login', user.lastLogin ? fmtDateTime(user.lastLogin) : ''],
+  ]
 
   return (
     <div className="narrow">
@@ -68,10 +95,10 @@ export function ProfilePage() {
           </div>
         </div>
         <dl className="details">
-          {[['Full Name', user.name], ['Phone', user.phone], ['Email', user.email], ['Role', user.roleLabel], ...extra, ['Account Status', user.status]].map(([k, v], i) => (
+          {rows.map(([k, v], i) => (
             <div key={i}>
               <dt>{k}</dt>
-              <dd>{v}</dd>
+              <dd>{v || '—'}</dd>
             </div>
           ))}
         </dl>
@@ -79,8 +106,9 @@ export function ProfilePage() {
           <button
             className="btn btn-primary"
             onClick={() => {
-              setForm({ name: user.name, phone: user.phone, email: user.email })
+              setForm({ name: user.name, email: user.email, address: user.address })
               setErrors({})
+              setFormError('')
               setEditing(true)
             }}
           >
@@ -95,18 +123,19 @@ export function ProfilePage() {
         </div>
       </div>
       <p className="privacy-note">
-        <ShieldCheck size={16} /> Your information is only visible to authorized staff of your school.
+        <ShieldCheck size={16} /> Your phone number is your sign-in name; ask your school to change it. Your information is only visible to authorized staff.
       </p>
 
-      <Modal open={editing} title="Edit Profile" onClose={() => setEditing(false)}>
+      <Modal open={editing} title="Edit Profile" onClose={() => !saving && setEditing(false)}>
         <form onSubmit={save} noValidate>
+          {formError && <FormAlert>{formError}</FormAlert>}
           <FormFields fields={PROFILE_FIELDS} form={form} setForm={setForm} errors={errors} />
           <div className="form-actions">
-            <button type="button" className="btn" onClick={() => setEditing(false)}>
+            <button type="button" className="btn" onClick={() => setEditing(false)} disabled={saving}>
               Cancel
             </button>
-            <button type="submit" className="btn btn-primary">
-              Save Changes
+            <button type="submit" className="btn btn-primary" disabled={saving}>
+              {saving ? 'Saving…' : 'Save Changes'}
             </button>
           </div>
         </form>
@@ -129,33 +158,43 @@ export function PasswordInput({ value, onChange, placeholder, autoComplete }) {
 }
 
 export function ChangePasswordPage() {
-  const { db, user, mutate, log } = useStore()
+  const { db, user } = useStore()
   const toast = useToast()
   const navigate = useNavigate()
   const [f, setF] = useState({ current: '', next: '', confirm: '' })
   const [errors, setErrors] = useState({})
+  const [formError, setFormError] = useState('')
+  const [saving, setSaving] = useState(false)
   const set = (k) => (v) => setF((p) => ({ ...p, [k]: v }))
-  const min = Number(db.settings.passwordMin) || 6
+  const min = Math.max(6, Number(db.settings.passwordMin) || 6)
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault()
     const errs = {}
-    if ((db.passwords[user.id] ?? DEMO_PASSWORD) !== f.current) errs.current = 'Current password is incorrect.'
+    if (!f.current) errs.current = 'Enter your current password.'
     if (f.next.length < min) errs.next = `Password must be at least ${min} characters.`
     else if (f.next === f.current) errs.next = 'New password must be different from the current one.'
     if (f.confirm !== f.next) errs.confirm = 'Passwords do not match.'
     setErrors(errs)
+    setFormError('')
     if (Object.keys(errs).length) return
-    mutate((prev) => ({ passwords: { ...prev.passwords, [user.id]: f.next } }))
-    log('Update', 'Authentication', 'Password changed')
-    toast('Your password has been changed.')
-    navigate(`/${user.role}/profile`)
+    setSaving(true)
+    try {
+      await api.auth.changePassword(f.current, f.next)
+      toast('Your password has been changed.')
+      navigate(`/${user.role}/profile`)
+    } catch (err) {
+      if (err.status === 400 && /current password/i.test(err.message)) setErrors({ current: 'Current password is incorrect.' })
+      else setFormError(errorText(err))
+      setSaving(false)
+    }
   }
 
   return (
     <div className="narrow">
       <PageHeader title="Change Password" subtitle="Choose a password you do not use anywhere else." />
       <form className="card form-card" onSubmit={submit} noValidate>
+        {formError && <FormAlert>{formError}</FormAlert>}
         <Field label="Current Password" required error={errors.current}>
           <PasswordInput value={f.current} onChange={set('current')} placeholder="Enter your current password" autoComplete="current-password" />
         </Field>
@@ -166,11 +205,11 @@ export function ChangePasswordPage() {
           <PasswordInput value={f.confirm} onChange={set('confirm')} placeholder="Re-enter the new password" autoComplete="new-password" />
         </Field>
         <div className="form-actions">
-          <button type="button" className="btn" onClick={() => navigate(-1)}>
+          <button type="button" className="btn" onClick={() => navigate(-1)} disabled={saving}>
             Cancel
           </button>
-          <button type="submit" className="btn btn-primary">
-            Change Password
+          <button type="submit" className="btn btn-primary" disabled={saving}>
+            {saving ? 'Saving…' : 'Change Password'}
           </button>
         </div>
       </form>
@@ -237,8 +276,12 @@ export function AuditLogPage({ scope }) {
             <tbody>
               {rows.slice((cur - 1) * size, cur * size).map((a) => (
                 <tr key={a.id}>
-                  <td data-label="Time" className="nowrap">{fmtDateTime(a.at)}</td>
-                  <td data-label="User" className="td-primary">{a.user}</td>
+                  <td data-label="Time" className="nowrap">
+                    {fmtDateTime(a.at)}
+                  </td>
+                  <td data-label="User" className="td-primary">
+                    {a.user}
+                  </td>
                   <td data-label="Role">{a.role}</td>
                   <td data-label="Action">{a.action}</td>
                   <td data-label="Module">{a.module}</td>

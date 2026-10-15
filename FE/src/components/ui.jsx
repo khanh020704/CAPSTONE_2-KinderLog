@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react'
 import { initials, norm, relTime, tintOf } from '../lib/utils'
+import { errorText } from '../lib/labels'
 
 export function Logo({ size = 32, withText = true, className = '' }) {
   return (
@@ -315,6 +316,18 @@ export function ErrorState({ title = 'Something went wrong.', onRetry }) {
   )
 }
 
+// Renders `children(data)` once a useApi() request has data; skeleton while loading, error card with Retry on failure.
+export function Loadable({ q, skeleton = <SkeletonCards />, children }) {
+  if (q.error && q.data === undefined)
+    return (
+      <div className="card">
+        <ErrorState title={errorText(q.error)} onRetry={q.reload} />
+      </div>
+    )
+  if (q.data === undefined) return skeleton
+  return children(q.data)
+}
+
 export const Skeleton = ({ h = 16, w = '100%', r = 8 }) => <span className="skeleton" style={{ height: h, width: w, borderRadius: r }} />
 
 export function SkeletonTable({ rows = 6 }) {
@@ -417,7 +430,12 @@ export function RowMenu({ items }) {
 }
 
 export function Pagination({ page, pages, total, onPage }) {
-  if (pages <= 1) return <div className="pagination muted">{total} {total === 1 ? 'record' : 'records'}</div>
+  if (pages <= 1)
+    return (
+      <div className="pagination muted">
+        {total} {total === 1 ? 'record' : 'records'}
+      </div>
+    )
   return (
     <div className="pagination">
       <span className="muted">

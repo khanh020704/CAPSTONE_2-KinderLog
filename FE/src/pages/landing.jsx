@@ -43,8 +43,18 @@ const FEATURES = [
 ]
 
 const AUDIENCES = [
-  { icon: Building2, tint: 'sky', title: 'For schools', points: ['One place for classes, teachers, students and parents', 'See attendance and journals for the whole school', 'Control when classroom cameras are open'] },
-  { icon: GraduationCap, tint: 'cream', title: 'For teachers', points: ['Finish the daily journal in minutes, by voice', 'Take attendance quickly on a phone', 'Keep parent conversations in one place'] },
+  {
+    icon: Building2,
+    tint: 'sky',
+    title: 'For schools',
+    points: ['One place for classes, teachers, students and parents', 'See attendance and journals for the whole school', 'Control when classroom cameras are open'],
+  },
+  {
+    icon: GraduationCap,
+    tint: 'cream',
+    title: 'For teachers',
+    points: ['Finish the daily journal in minutes, by voice', 'Take attendance quickly on a phone', 'Keep parent conversations in one place'],
+  },
   { icon: Users, tint: 'mint', title: 'For parents', points: ["Know how your child's day went", 'Message the teacher directly', 'Get school news without missing anything'] },
 ]
 

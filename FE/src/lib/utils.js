@@ -91,9 +91,7 @@ export const norm = (s) =>
 export function cameraState(db, classId, now = new Date()) {
   const today = toISO(now)
   const cur = now.getHours() * 60 + now.getMinutes()
-  const slots = db.schedules
-    .filter((s) => s.classId === classId && s.date === today && s.enabled)
-    .sort((a, b) => hmToMin(a.start) - hmToMin(b.start))
+  const slots = db.schedules.filter((s) => s.classId === classId && s.date === today && s.enabled).sort((a, b) => hmToMin(a.start) - hmToMin(b.start))
   const live = slots.find((s) => hmToMin(s.start) <= cur && cur < hmToMin(s.end))
   if (live) return { state: 'live', schedule: live }
   const next = slots.find((s) => hmToMin(s.start) > cur)
@@ -111,9 +109,7 @@ export function scheduleStatus(s, now = new Date()) {
 }
 
 export function downloadCSV(filename, rows) {
-  const csv = rows
-    .map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))
-    .join('\r\n')
+  const csv = rows.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n')
   // BOM so Excel reads Vietnamese characters correctly
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')

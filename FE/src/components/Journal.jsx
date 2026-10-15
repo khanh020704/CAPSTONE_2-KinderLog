@@ -10,6 +10,53 @@ const filled = (journal, s) => journal.sections[s.key]?.trim()
 // A journal has two layers: `sections` are shared with the whole class, `personal[studentId]` only with that child's parents.
 export const personalNote = (journal, studentId) => journal?.personal?.[studentId]?.trim() || ''
 
+const EVENT_META = {
+  attendance: { icon: DoorOpen, tint: 'peach', title: 'Attendance' },
+  learning: { icon: Palette, tint: SECTION_TINT.learning, title: 'Learning Activity' },
+  meal: { icon: Utensils, tint: SECTION_TINT.meal, title: 'Lunch' },
+  sleep: { icon: Moon, tint: SECTION_TINT.sleep, title: 'Nap' },
+  health: { icon: HeartPulse, tint: SECTION_TINT.health, title: 'Health' },
+  emotion: { icon: Smile, tint: SECTION_TINT.emotion, title: 'Emotion' },
+  note: { icon: UserRound, tint: 'lav', title: 'Note from the teacher' },
+}
+
+// One day of a child's journal as returned by GET /daily-journals/timeline: `day.events` are already in order.
+export function DayTimeline({ day, private: privateNote = true }) {
+  return (
+    <>
+      <ol className="timeline">
+        {day.events.map((ev) => {
+          const meta = EVENT_META[ev.key] || EVENT_META.note
+          return (
+            <li key={ev.key} className="tl-item">
+              <span className={`tl-icon tint-${meta.tint}`}>
+                <meta.icon size={18} />
+              </span>
+              <div>
+                {ev.time && <div className="tl-time">{ev.time}</div>}
+                <div className="tl-title">{meta.title}</div>
+                <div>{ev.text}</div>
+                {privateNote && ev.key === 'note' && (
+                  <span className="chip private-chip">
+                    <Lock size={12} /> Only this child's family can see this
+                  </span>
+                )}
+              </div>
+            </li>
+          )
+        })}
+      </ol>
+      {day.photos.length > 0 && (
+        <div className="photos">
+          {day.photos.map((p) => (
+            <PhotoTile key={p.id} src={p.url} />
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
 // What a parent sees: timed moments first, then the untimed observations, then the note about their own child.
 // `attendance` and `child` belong to the viewing parent; `students` (teacher preview) lists every individual note instead.
 export function JournalTimeline({ journal, attendance, child, students }) {
@@ -35,7 +82,14 @@ export function JournalTimeline({ journal, attendance, child, students }) {
       tint: SECTION_TINT[s.key],
     })),
     own && { key: 'own', title: `About ${child.name}`, text: own, icon: UserRound, tint: 'lav', private: 'Only you can see this note' },
-    ...individual.map((s) => ({ key: s.id, title: `About ${s.name}`, text: personalNote(journal, s.id), icon: UserRound, tint: 'lav', private: `Only ${s.name}'s parents see this` })),
+    ...individual.map((s) => ({
+      key: s.id,
+      title: `About ${s.name}`,
+      text: personalNote(journal, s.id),
+      icon: UserRound,
+      tint: 'lav',
+      private: `Only ${s.name}'s parents see this`,
+    })),
   ].filter(Boolean)
 
   return (

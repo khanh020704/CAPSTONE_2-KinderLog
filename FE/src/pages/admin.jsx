@@ -1,27 +1,25 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Activity, Cpu, Database, HardDrive, Lock, RefreshCw, RotateCcw, School, ScrollText, Sparkles, UserCog, CheckCircle2 } from 'lucide-react'
-import { DEMO_PASSWORD, byId, useStore } from '../store/store'
-import { fmtDate, fmtDateTime, relTime, toISO, todayISO, uid } from '../lib/utils'
-import { phoneTaken, resetPasswordAction, statusActions } from '../lib/actions'
+import { Activity, Cpu, Database, HardDrive, Lock, RefreshCw, RotateCcw, School, Sparkles, UserCog, CheckCircle2 } from 'lucide-react'
+import { DEMO_PASSWORD, useStore } from '../store/store'
+import { fmtDate, fmtDateTime, relTime, todayISO } from '../lib/utils'
+import { api } from '../lib/api'
+import { useApi } from '../lib/useApi'
+import { STATUS, STATUS_KEY, errorText } from '../lib/labels'
+import { resetPasswordAction, statusActions } from '../lib/actions'
 import CrudPage, { FormFields, validateFields } from '../components/CrudPage'
-import { Avatar, ConfirmDialog, PageHeader, SkeletonCards, StatCard, StatusBadge, useFakeLoad, useToast } from '../components/ui'
+import { CategoryBarChart } from '../components/Charts'
+import { Avatar, ConfirmDialog, Loadable, PageHeader, SkeletonCards, StatCard, StatusBadge, useToast } from '../components/ui'
 
-// The demo runs one school; counts come from that school's data and new schools start empty.
-const schoolCounts = (db, school) =>
-  school.id === 's1'
-    ? { teachers: db.teachers.length, classes: db.classes.length, students: db.students.length }
-    : { teachers: 0, classes: 0, students: 0 }
+const USER_STATUS = ['Active', 'Inactive', 'Locked']
+const statusOf = (r) => STATUS[r.status] || r.status
+const dateOf = (ts) => (ts ? fmtDate(String(ts).slice(0, 10)) : '—')
+const blankToUndef = (v) => (v === undefined || v === null || String(v).trim() === '' ? undefined : String(v).trim())
 
+// Sample infrastructure figures: the demo has no metrics agent. The API/database row is checked live.
 const SERVICES = [
-  { name: 'Web application', status: 'Operational', detail: 'Response time 182 ms' },
-  { name: 'Database', status: 'Operational', detail: '14 of 100 connections in use' },
   { name: 'File storage', status: 'Operational', detail: 'Photos and attachments' },
   { name: 'Notification service', status: 'Operational', detail: 'Queue empty' },
-]
-const AI_SERVICES = [
-  { name: 'Vietnamese Speech-to-Text', status: 'Operational', detail: 'Average transcription 4.1 s' },
-  { name: 'Journal draft generation', status: 'Operational', detail: 'Average processing 6.2 s' },
 ]
 const RESOURCES = [
   { icon: HardDrive, label: 'Storage', value: 38, text: '38.4 GB of 100 GB' },
@@ -79,27 +77,67 @@ export function ActivityList({ items }) {
   )
 }
 
+// Live backend check: GET /health (database ping + AI mode).
+function useHealth() {
+  return useApi(async () => {
+    const started = performance.now()
+    try {
+      const h = await api.health()
+      return { ok: true, ms: Math.round(performance.now() - started), ...h }
+    } catch (e) {
+      return { ok: false, error: errorText(e) }
+    }
+  }, [])
+}
+
+const liveServices = (h) => [
+  { name: 'API server', status: h?.ok ? 'Operational' : 'Failed', detail: h?.ok ? `Response time ${h.ms} ms` : h?.error || 'Checking…' },
+  { name: 'Database (PostgreSQL)', status: h?.ok && h.db === 'up' ? 'Operational' : 'Failed', detail: h?.ok ? 'Connected' : 'Unreachable' },
+]
+const aiServices = (h) => [
+  { name: 'Speech-to-Text (Whisper)', status: h?.ok ? 'Operational' : 'Failed', detail: h?.aiMode === 'live' ? 'OpenAI Whisper' : 'Demo mode (offline transcript)' },
+  { name: 'Journal draft generation', status: h?.ok ? 'Operational' : 'Failed', detail: h?.aiMode === 'live' ? 'Claude structured outputs' : 'Demo mode (rule-based extractor)' },
+]
+
 export function AdminDashboard() {
   const { db, user } = useStore()
-  const loading = useFakeLoad()
-  const school = db.schools[0]
-  const counts = school ? schoolCounts(db, school) : null
-  const active = db.schools.filter((s) => s.status === 'Active').length
-  const today = db.audit.filter((a) => toISO(new Date(a.at)) === todayISO())
+  const ad = useApi(() => api.reports.adminDashboard(), [])
+  const schools = useApi(() => api.schools.list(), [])
+  const health = useHealth()
+  const today = db.audit.filter((a) => new Date(a.at).toISOString().slice(0, 10) === todayISO())
 
   return (
     <>
       <PageHeader title="Dashboard" subtitle={`Platform status · ${fmtDate(todayISO())}`} />
-      {loading ? (
-        <SkeletonCards />
-      ) : (
-        <div className="grid stats">
-          <StatCard icon={School} label="Total Schools" value={db.schools.length} tint="sky" />
-          <StatCard icon={CheckCircle2} label="Active Schools" value={active} tint="mint" />
-          <StatCard icon={Lock} label="Inactive / Locked Schools" value={db.schools.length - active} tint="peach" />
-          <StatCard icon={UserCog} label="Principal Accounts" value={db.principals.length} tint="lav" />
-        </div>
-      )}
+      <Loadable q={ad} skeleton={<SkeletonCards />}>
+        {(d) => (
+          <>
+            <div className="grid stats">
+              <StatCard icon={School} label="Total Schools" value={d.totals.schools} tint="sky" />
+              <StatCard icon={CheckCircle2} label="Active Schools" value={d.totals.activeSchools} tint="mint" />
+              <StatCard icon={Lock} label="Inactive / Locked Schools" value={d.totals.schools - d.totals.activeSchools} tint="peach" />
+              <StatCard
+                icon={UserCog}
+                label="Principal Accounts"
+                value={d.totals.users.PRINCIPAL.total}
+                hint={`${d.totals.users.TEACHER.total} teachers · ${d.totals.users.PARENT.total} parents`}
+                tint="lav"
+              />
+            </div>
+            <section className="card">
+              <div className="card-head">
+                <h2>Journal entries in the last 7 days</h2>
+                <span className="muted small">per school</span>
+              </div>
+              <CategoryBarChart
+                data={d.last7Days.map((s) => ({ label: s.schoolName, value: s.journalEntries }))}
+                valueName="Entries"
+                height={Math.max(120, d.last7Days.length * 48)}
+              />
+            </section>
+          </>
+        )}
+      </Loadable>
 
       <div className="grid cols-2">
         <section className="card">
@@ -107,35 +145,19 @@ export function AdminDashboard() {
             <h2>School Overview</h2>
             <Link to="/admin/schools">Manage schools</Link>
           </div>
-          {school && (
-            <>
-              <div className="row-between">
-                <div>
-                  <strong className="lead">{school.name}</strong>
-                  <div className="muted">{school.address}</div>
-                </div>
-                <StatusBadge status={school.status} />
-              </div>
-              <dl className="details compact">
-                <div>
-                  <dt>Principal</dt>
-                  <dd>{byId(db.principals, school.principalId)?.name || 'Not assigned'}</dd>
-                </div>
-                <div>
-                  <dt>Teachers</dt>
-                  <dd>{counts.teachers}</dd>
-                </div>
-                <div>
-                  <dt>Classes</dt>
-                  <dd>{counts.classes}</dd>
-                </div>
-                <div>
-                  <dt>Students</dt>
-                  <dd>{counts.students}</dd>
-                </div>
-              </dl>
-            </>
-          )}
+          <ul className="plain-list">
+            {(schools.data || []).map((s) => (
+              <li key={s.id} className="row-between">
+                <span>
+                  <strong>{s.name}</strong>
+                  <span className="muted block small">
+                    {s.principals[0]?.fullName || 'No principal'} · {s.classCount} classes · {s.teacherCount} teachers · {s.parentCount} parents
+                  </span>
+                </span>
+                <StatusBadge status={statusOf(s)} />
+              </li>
+            ))}
+          </ul>
         </section>
 
         <section className="card">
@@ -147,13 +169,16 @@ export function AdminDashboard() {
             <span>
               <Activity size={16} /> System health
             </span>
-            <StatusBadge status="Healthy" />
+            <StatusBadge status={health.data ? (health.data.ok ? 'Healthy' : 'Failed') : 'Pending'} />
           </div>
           <div className="row-between">
             <span>
               <Sparkles size={16} /> AI service
             </span>
-            <StatusBadge status="Operational" />
+            <span className="cell-user">
+              <span className="muted small">{health.data?.aiMode === 'live' ? 'Live (Whisper + Claude)' : 'Demo mode'}</span>
+              <StatusBadge status={health.data?.ok ? 'Operational' : 'Pending'} />
+            </span>
           </div>
           {RESOURCES.map((r) => (
             <Meter key={r.label} {...r} />
@@ -190,53 +215,47 @@ export function AdminDashboard() {
 }
 
 export function SchoolsPage() {
-  const { db, mutate, upsert, log } = useStore()
   const toast = useToast()
-  const principalName = (s) => byId(db.principals, s.principalId)?.name
+  const schools = useApi(() => api.schools.list(), [])
+  const principalName = (s) => s.principals.map((p) => p.fullName).join(', ')
 
   return (
     <CrudPage
       title="Schools"
-      subtitle="Schools using KinderLog"
+      subtitle="Schools using KinderLog. Principals are assigned in Principals."
       noun="School"
       addLabel="Add School"
-      rows={db.schools}
-      searchText={(s) => `${s.name} ${principalName(s) || ''} ${s.address}`}
+      rows={schools.data || []}
+      loading={schools.loading}
+      error={schools.error}
+      onRetry={schools.reload}
+      searchText={(s) => `${s.name} ${principalName(s)} ${s.address || ''}`}
       searchPlaceholder="Search school or principal"
-      filters={[{ key: 'status', label: 'statuses', options: ['Active', 'Inactive', 'Locked'], get: (s) => s.status }]}
+      filters={[{ key: 'status', label: 'statuses', options: USER_STATUS, get: statusOf }]}
       columns={[
         { key: 'name', label: 'School Name', sort: (s) => s.name },
         { key: 'principal', label: 'Principal', render: (s) => principalName(s) || <span className="muted">Not assigned</span> },
-        { key: 'status', label: 'Status', render: (s) => <StatusBadge status={s.status} /> },
-        { key: 'teachers', label: 'Teachers', render: (s) => schoolCounts(db, s).teachers },
-        { key: 'classes', label: 'Classes', render: (s) => schoolCounts(db, s).classes },
-        { key: 'students', label: 'Students', render: (s) => schoolCounts(db, s).students },
-        { key: 'createdAt', label: 'Created Date', sort: (s) => s.createdAt, render: (s) => fmtDate(toISO(new Date(s.createdAt))) },
+        { key: 'status', label: 'Status', render: (s) => <StatusBadge status={statusOf(s)} /> },
+        { key: 'teachers', label: 'Teachers', sort: (s) => s.teacherCount, render: (s) => s.teacherCount },
+        { key: 'classes', label: 'Classes', sort: (s) => s.classCount, render: (s) => s.classCount },
+        { key: 'parents', label: 'Parents', sort: (s) => s.parentCount, render: (s) => s.parentCount },
+        { key: 'createdAt', label: 'Created Date', sort: (s) => s.createdAt, render: (s) => dateOf(s.createdAt) },
       ]}
       fields={(form, editing) => [
         { name: 'name', label: 'School Name', required: true, placeholder: 'e.g. Mầm non Hoa Sen', full: true },
         { name: 'address', label: 'Address', required: true, full: true },
         { name: 'phone', label: 'Phone', required: true, validate: (v) => (!/^0\d{9,10}$/.test(v || '') ? 'Enter a valid phone number.' : '') },
         { name: 'email', label: 'Email', type: 'email', required: true },
-        {
-          name: 'principalId',
-          label: 'Principal',
-          type: 'select',
-          placeholder: 'Not assigned',
-          hint: 'Principal accounts are created in Principals.',
-          options: db.principals.filter((p) => !db.schools.some((s) => s.principalId === p.id && s.id !== editing?.id)).map((p) => ({ value: p.id, label: p.name })),
-        },
-        { name: 'status', label: 'Status', type: 'select', required: true, options: ['Active', 'Inactive', 'Locked'], placeholder: undefined },
+        ...(editing ? [{ name: 'status', label: 'Status', type: 'select', required: true, options: USER_STATUS, placeholder: undefined }] : []),
       ]}
-      initial={(s) => s || { name: '', address: '', phone: '', email: '', principalId: '', status: 'Active' }}
-      onSave={(form, editing) => {
-        if (db.schools.some((s) => s.name.trim().toLowerCase() === form.name.trim().toLowerCase() && s.id !== editing?.id)) return 'A school with this name already exists.'
-        const id = editing?.id || uid('s')
-        mutate((prev) => ({
-          schools: editing ? prev.schools.map((s) => (s.id === id ? { ...s, ...form } : s)) : [...prev.schools, { ...form, id, createdAt: Date.now() }],
-          principals: prev.principals.map((p) => (p.id === form.principalId ? { ...p, schoolId: id } : p.schoolId === id ? { ...p, schoolId: '' } : p)),
-        }))
-        log(editing ? 'Update' : 'Create', 'Schools', `School ${editing ? 'updated' : 'created'}: ${form.name}`)
+      initial={(s) =>
+        s ? { name: s.name, address: s.address || '', phone: s.phone || '', email: s.email || '', status: statusOf(s) } : { name: '', address: '', phone: '', email: '' }
+      }
+      onSave={async (form, editing) => {
+        const body = { name: form.name.trim(), address: form.address.trim(), phone: form.phone.trim(), email: form.email.trim() }
+        if (editing) await api.schools.update(editing.id, { ...body, status: STATUS_KEY[form.status] })
+        else await api.schools.create(body)
+        schools.reload()
       }}
       viewRows={(s) => [
         ['School Name', s.name],
@@ -244,22 +263,22 @@ export function SchoolsPage() {
         ['Phone', s.phone],
         ['Email', s.email],
         ['Principal', principalName(s)],
-        ['Status', <StatusBadge status={s.status} />],
-        ['Teachers', schoolCounts(db, s).teachers],
-        ['Classes', schoolCounts(db, s).classes],
-        ['Students', schoolCounts(db, s).students],
-        ['Created Date', fmtDate(toISO(new Date(s.createdAt)))],
+        ['Status', <StatusBadge status={statusOf(s)} />],
+        ['Teachers', s.teacherCount],
+        ['Classes', s.classCount],
+        ['Parents', s.parentCount],
+        ['Created Date', dateOf(s.createdAt)],
       ]}
-      actions={(row) => statusActions({ row, coll: 'schools', noun: 'School', module: 'Schools', upsert, log, toast })}
+      actions={(row) => statusActions({ row, name: row.name, noun: 'School', save: (status) => api.schools.update(row.id, { status }), done: schools.reload, toast })}
       empty={{ icon: School, title: 'No schools have been added yet.' }}
     />
   )
 }
 
 export function PrincipalsPage() {
-  const { db, mutate, upsert, log } = useStore()
   const toast = useToast()
-  const schoolName = (p) => byId(db.schools, p.schoolId)?.name
+  const principals = useApi(() => api.users.list({ role: 'PRINCIPAL' }), [])
+  const schools = useApi(() => api.schools.list(), [])
 
   return (
     <CrudPage
@@ -267,57 +286,57 @@ export function PrincipalsPage() {
       subtitle="Principal accounts are created by the System Admin"
       noun="Principal"
       addLabel="Add Principal"
-      rows={db.principals}
-      searchText={(p) => `${p.name} ${p.phone} ${p.email} ${schoolName(p) || ''}`}
+      rows={principals.data || []}
+      loading={principals.loading}
+      error={principals.error}
+      onRetry={principals.reload}
+      searchText={(p) => `${p.fullName} ${p.phone} ${p.email || ''} ${p.school?.name || ''}`}
       searchPlaceholder="Search name, phone or email"
-      filters={[{ key: 'status', label: 'statuses', options: ['Active', 'Inactive', 'Locked'], get: (p) => p.status }]}
+      filters={[{ key: 'status', label: 'statuses', options: USER_STATUS, get: statusOf }]}
       columns={[
         {
           key: 'name',
           label: 'Name',
-          sort: (p) => p.name,
+          sort: (p) => p.fullName,
           render: (p) => (
             <span className="cell-user">
-              <Avatar name={p.name} size={34} /> {p.name}
+              <Avatar name={p.fullName} size={34} /> {p.fullName}
             </span>
           ),
         },
         { key: 'email', label: 'Email' },
         { key: 'phone', label: 'Phone' },
-        { key: 'school', label: 'School', render: (p) => schoolName(p) || <span className="muted">Not assigned</span> },
-        { key: 'status', label: 'Status', render: (p) => <StatusBadge status={p.status} /> },
-        { key: 'createdAt', label: 'Created Date', sort: (p) => p.createdAt, render: (p) => fmtDate(toISO(new Date(p.createdAt))) },
-        { key: 'lastLogin', label: 'Last Login', render: (p) => (p.lastLogin ? relTime(p.lastLogin) : 'Never') },
+        { key: 'school', label: 'School', render: (p) => p.school?.name || <span className="muted">Not assigned</span> },
+        { key: 'status', label: 'Status', render: (p) => <StatusBadge status={statusOf(p)} /> },
+        { key: 'createdAt', label: 'Created Date', sort: (p) => p.createdAt, render: (p) => dateOf(p.createdAt) },
+        { key: 'lastLogin', label: 'Last Login', render: (p) => (p.lastLoginAt ? relTime(new Date(p.lastLoginAt).getTime()) : 'Never') },
       ]}
       fields={(form, editing) => [
-        { name: 'name', label: 'Full Name', required: true },
+        { name: 'fullName', label: 'Full Name', required: true },
         { name: 'phone', label: 'Phone', type: 'tel', required: true, hint: editing ? undefined : `Used to sign in. Initial password: ${DEMO_PASSWORD}` },
-        { name: 'email', label: 'Email', type: 'email', required: true },
-        { name: 'schoolId', label: 'School', type: 'select', placeholder: 'Not assigned', options: db.schools.map((s) => ({ value: s.id, label: s.name })) },
-        { name: 'status', label: 'Status', type: 'select', required: true, options: ['Active', 'Inactive', 'Locked'], placeholder: undefined },
+        { name: 'email', label: 'Email', type: 'email' },
+        { name: 'schoolId', label: 'School', type: 'select', required: true, options: (schools.data || []).map((s) => ({ value: s.id, label: s.name })) },
       ]}
-      initial={(p) => p || { name: '', phone: '', email: '', schoolId: '', status: 'Active' }}
-      onSave={(form, editing) => {
-        if (phoneTaken(db, form.phone, editing?.id)) return 'This phone number is already used by another account.'
-        const id = editing?.id || uid('pr')
-        mutate((prev) => ({
-          principals: editing ? prev.principals.map((p) => (p.id === id ? { ...p, ...form } : p)) : [{ ...form, id, createdAt: Date.now(), lastLogin: null }, ...prev.principals],
-          schools: prev.schools.map((s) => (s.id === form.schoolId ? { ...s, principalId: id } : s.principalId === id ? { ...s, principalId: '' } : s)),
-        }))
-        log(editing ? 'Update' : 'Create', 'Principals', `Principal account ${editing ? 'updated' : 'created'}: ${form.name}`)
+      initial={(p) => (p ? { fullName: p.fullName, phone: p.phone, email: p.email || '', schoolId: p.schoolId || '' } : { fullName: '', phone: '', email: '', schoolId: '' })}
+      onSave={async (form, editing) => {
+        const body = { fullName: form.fullName.trim(), phone: form.phone.trim(), email: blankToUndef(form.email), schoolId: form.schoolId }
+        if (editing) await api.users.update(editing.id, body)
+        else await api.users.create({ ...body, role: 'PRINCIPAL' })
+        principals.reload()
+        schools.reload()
       }}
       viewRows={(p) => [
-        ['Full Name', p.name],
+        ['Full Name', p.fullName],
         ['Phone', p.phone],
         ['Email', p.email],
-        ['School', schoolName(p)],
-        ['Status', <StatusBadge status={p.status} />],
-        ['Created Date', fmtDate(toISO(new Date(p.createdAt)))],
-        ['Last Login', p.lastLogin ? fmtDateTime(p.lastLogin) : 'Never'],
+        ['School', p.school?.name],
+        ['Status', <StatusBadge status={statusOf(p)} />],
+        ['Created Date', dateOf(p.createdAt)],
+        ['Last Login', p.lastLoginAt ? fmtDateTime(new Date(p.lastLoginAt).getTime()) : 'Never'],
       ]}
       actions={(row) => [
-        resetPasswordAction({ row, noun: 'Principal', module: 'Principals', mutate, log, toast }),
-        ...statusActions({ row, coll: 'principals', noun: 'Principal', module: 'Principals', upsert, log, toast }),
+        resetPasswordAction({ row, reset: () => api.users.resetPassword(row.id), toast }),
+        ...statusActions({ row, noun: 'Principal', save: (s) => api.users.setStatus(row.id, s), done: principals.reload, toast }),
       ]}
       empty={{ icon: UserCog, title: 'No principal accounts yet.' }}
     />
@@ -372,7 +391,10 @@ export function SettingsPage() {
 
       <div className="card form-card">
         <h2>Demonstration data</h2>
-        <p className="muted">Restore the sample school, accounts and journals to their original state. All changes made in this browser will be lost.</p>
+        <p className="muted">
+          Restore the local sample data (messages, notifications, announcements, audit log) kept in this browser. Data stored in the backend is reset with <code>npm run seed</code>{' '}
+          in the BE folder.
+        </p>
         <div>
           <button className="btn" onClick={() => setConfirm(true)}>
             <RotateCcw size={16} /> Reset demo data
@@ -397,23 +419,21 @@ export function SettingsPage() {
 }
 
 export function MonitoringPage() {
+  const health = useHealth()
   const [checked, setChecked] = useState(Date.now())
-  const [busy, setBusy] = useState(false)
   const refresh = () => {
-    setBusy(true)
-    setTimeout(() => {
-      setChecked(Date.now())
-      setBusy(false)
-    }, 700)
+    health.reload()
+    setChecked(Date.now())
   }
+  const ok = health.data?.ok
   return (
     <>
       <PageHeader
         title="System Monitoring"
-        subtitle={`Last checked ${fmtDateTime(checked)} · sample values for demonstration`}
+        subtitle={`Last checked ${fmtDateTime(checked)} · API and database are checked live; resource figures are sample values`}
         actions={
-          <button className="btn" onClick={refresh} disabled={busy}>
-            <RefreshCw size={16} className={busy ? 'spin' : ''} /> {busy ? 'Checking…' : 'Refresh'}
+          <button className="btn" onClick={refresh} disabled={health.loading}>
+            <RefreshCw size={16} className={health.loading ? 'spin' : ''} /> {health.loading ? 'Checking…' : 'Refresh'}
           </button>
         }
       />
@@ -421,16 +441,16 @@ export function MonitoringPage() {
         <section className="card">
           <div className="card-head">
             <h2>System Health</h2>
-            <StatusBadge status="Healthy" />
+            <StatusBadge status={health.data ? (ok ? 'Healthy' : 'Failed') : 'Pending'} />
           </div>
-          <ServiceList items={SERVICES} />
+          <ServiceList items={[...liveServices(health.data), ...SERVICES]} />
         </section>
         <section className="card">
           <div className="card-head">
             <h2>AI Service Status</h2>
-            <StatusBadge status="Operational" />
+            <StatusBadge status={ok ? 'Operational' : 'Pending'} />
           </div>
-          <ServiceList items={AI_SERVICES} />
+          <ServiceList items={aiServices(health.data)} />
         </section>
         <section className="card">
           <div className="card-head">
@@ -447,9 +467,9 @@ export function MonitoringPage() {
           <ul className="plain-list">
             {[
               ['Journal photos', '24.1 GB'],
-              ['Voice recordings', '9.8 GB'],
+              ['Voice recordings', 'Not stored (sent to speech-to-text only)'],
               ['Profile photos', '1.3 GB'],
-              ['Documents and exports', '3.2 GB'],
+              ['Documents and exports', 'Generated on demand'],
             ].map(([k, v]) => (
               <li key={k} className="row-between">
                 <span>{k}</span>

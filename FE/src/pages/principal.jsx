@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
+  AlertTriangle,
   Baby,
   BookOpen,
   CalendarClock,
@@ -9,6 +10,7 @@ import {
   ClipboardCheck,
   Download,
   GraduationCap,
+  HeartPulse,
   Link2,
   Megaphone,
   MessageCircle,
@@ -22,191 +24,287 @@ import {
   Trash2,
   Unlink,
   Users,
+  Utensils,
   Video,
 } from 'lucide-react'
-import { DEMO_PASSWORD, attendanceCounts, byId, journalOf, linksOfStudent, studentsOfClass, useStore } from '../store/store'
-import { JOURNAL_STATUS, addDays, downloadCSV, fmtDate, fmtDateTime, greeting, relTime, scheduleStatus, todayISO, toISO, uid } from '../lib/utils'
-import { phoneTaken, resetPasswordAction, statusActions } from '../lib/actions'
+import { DEMO_PASSWORD, useStore } from '../store/store'
+import { addDays, dayLabel, fmtDate, fmtDateTime, greeting, relTime, todayISO, uid } from '../lib/utils'
+import { api } from '../lib/api'
+import { useApi } from '../lib/useApi'
+import { GENDER, GENDER_OPTIONS, HEALTH, MEAL, RELATIONSHIP, RELATIONSHIP_OPTIONS, STATUS, STATUS_KEY, errorText, label, weekdaysText } from '../lib/labels'
+import { resetPasswordAction, statusActions } from '../lib/actions'
 import CrudPage, { FormFields, validateFields } from '../components/CrudPage'
-import { CameraBadge, CameraPlayer, CameraPreview, CameraStatusText, useCamera, useNow } from '../components/Camera'
+import { CameraBadge, CameraPlayer, CameraPreview, CameraStatusText } from '../components/Camera'
+import { CategoryBarChart, RateTrendChart } from '../components/Charts'
 import { ActivityList } from './admin'
-import { Avatar, EmptyState, Modal, PageHeader, SegBar, Select, SkeletonCards, StatCard, StatusBadge, useFakeLoad, useToast } from '../components/ui'
+import { Avatar, EmptyState, Loadable, Modal, PageHeader, Select, SkeletonCards, SkeletonTable, StatCard, StatusBadge, useToast } from '../components/ui'
 
-const RELATIONSHIPS = ['Mother', 'Father', 'Grandmother', 'Grandfather', 'Guardian']
-const ACCOUNT_STATUS = ['Active', 'Inactive']
-const created = (ts) => (ts ? fmtDate(toISO(new Date(ts))) : '—')
-const lastLogin = (u) => (u.lastLogin ? relTime(u.lastLogin) : 'Never')
+const ACCOUNT_STATUS = [
+  { value: 'Active', label: 'Active' },
+  { value: 'Inactive', label: 'Inactive' },
+]
+const USER_STATUS = ['Active', 'Inactive', 'Locked']
+const dateOf = (ts) => (ts ? fmtDate(String(ts).slice(0, 10)) : '—')
+const lastLogin = (u) => (u.lastLoginAt ? relTime(new Date(u.lastLoginAt).getTime()) : 'Never')
+const statusOf = (r) => STATUS[r.status] || r.status
+const JOURNAL_PROGRESS = { NOT_STARTED: 'Not Started', DRAFT: 'Draft', PARTIAL: 'In Progress', APPROVED: 'Completed' }
+const blankToNull = (v) => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim())
+const blankToUndef = (v) => blankToNull(v) ?? undefined
 
-const journalProgress = (db, classId, date) => {
-  const j = journalOf(db, classId, date)
-  return !j ? 'Not Started' : j.status === 'published' ? 'Completed' : 'In Progress'
-}
+// Lists every principal page needs; each reloads independently after a change.
+const useClasses = () => useApi(() => api.classes.list(), [])
+const usePeople = (role) => useApi(() => api.users.list({ role }), [role])
+const useStudents = () => useApi(() => api.students.list(), [])
 
 // ---------- Dashboard ----------
 
-function CameraRow({ camera }) {
-  const { db } = useStore()
-  const cam = useCamera(camera.classId)
+const RANGES = [
+  { value: '7', label: 'Last 7 days' },
+  { value: '14', label: 'Last 14 days' },
+  { value: '30', label: 'Last 30 days' },
+]
+
+// A stat card with an optional 0–100 meter under the value.
+function Kpi({ icon: Icon, label: text, value, hint, tint, meter }) {
   return (
-    <li className="row-between">
-      <span>
-        <strong>{byId(db.classes, camera.classId)?.name}</strong>
-        <span className="muted block small">
-          <CameraStatusText cam={cam} />
-        </span>
+    <div className="card stat-card">
+      <span className={`stat-icon tint-${tint}`}>
+        <Icon size={20} />
       </span>
-      <CameraBadge state={cam.state} />
-    </li>
+      <div style={{ flex: 1 }}>
+        <div className="stat-label">{text}</div>
+        <div className="stat-value">{value}</div>
+        {hint && <div className="stat-hint">{hint}</div>}
+        {meter !== undefined && meter !== null && (
+          <div className="kpi-meter" role="img" aria-label={`${text}: ${value}`}>
+            <span style={{ width: `${Math.min(100, meter)}%` }} />
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
 export function PrincipalDashboard() {
   const { db, user } = useStore()
-  const loading = useFakeLoad()
   const today = todayISO()
-  const classes = db.classes.filter((c) => c.status === 'Active')
-  const att = classes.map((c) => ({ cls: c, ...attendanceCounts(db, c.id, today) }))
-  const sum = (k) => att.reduce((s, a) => s + a[k], 0)
-  const progress = classes.map((c) => journalProgress(db, c.id, today))
-  const countOf = (v) => progress.filter((p) => p === v).length
-
-  // Items that need the principal's attention are derived from today's data, so they clear themselves.
-  const attention = [
-    ...db.classes.filter((c) => !c.teacherId).map((c) => ({ icon: GraduationCap, title: 'No head teacher', body: `${c.name} has no head teacher assigned.`, to: '/principal/classes' })),
-    ...att.filter((a) => !a.recorded).map((a) => ({ icon: ClipboardCheck, title: 'Attendance not recorded', body: `${a.cls.name} has not recorded attendance today.` })),
-    ...classes
-      .map((c, i) => ({ c, p: progress[i] }))
-      .filter((x) => x.p !== 'Completed')
-      .map(({ c, p }) => ({
-        icon: BookOpen,
-        title: p === 'In Progress' ? 'Journal in progress' : 'Journal not started',
-        body: p === 'In Progress' ? `${c.name} journal is still being prepared.` : `${c.name} has not started today's journal.`,
-      })),
-  ]
+  const [range, setRange] = useState('7')
+  const dash = useApi(() => api.reports.dashboard({ from: addDays(today, -(Number(range) - 1)), to: today }), [range])
+  const cams = useApi(() => api.cameras.list(), [])
+  const classes = useClasses()
+  const teacherOf = (classId) => classes.data?.find((c) => c.id === classId)?.homeroomTeacher?.fullName
 
   return (
     <>
-      <PageHeader title={`${greeting()}, ${user.name}`} subtitle="School overview for today" />
-      {loading ? (
-        <SkeletonCards count={6} />
-      ) : (
-        <div className="grid stats">
-          <StatCard icon={School} label="Classes" value={classes.length} tint="sky" />
-          <StatCard icon={Baby} label="Students" value={db.students.filter((s) => s.status === 'Active').length} tint="peach" />
-          <StatCard icon={GraduationCap} label="Teachers" value={db.teachers.filter((t) => t.status === 'Active').length} tint="lav" />
-          <StatCard icon={CheckCircle2} label="Present Today" value={`${sum('present')} / ${sum('total')}`} tint="mint" />
-          <StatCard icon={BookOpen} label="Journal Completion" value={`${countOf('Completed')} / ${classes.length}`} hint="classes published today" tint="cream" />
-          <StatCard icon={MessageCircle} label="Unread Messages" value={db.messages.filter((m) => !m.read).length} hint="between teachers and parents" tint="sky" />
-        </div>
-      )}
+      <PageHeader title={`${greeting()}, ${user.name}`} subtitle="School overview" actions={<Select value={range} onChange={setRange} options={RANGES} aria-label="Period" />} />
+      <Loadable q={dash} skeleton={<SkeletonCards count={6} />}>
+        {(d) => {
+          const todays = d.today.classes
+          const sum = (k) => todays.reduce((s, c) => s + c[k], 0)
+          const done = todays.filter((c) => c.journalState === 'APPROVED').length
+          const attention = [
+            ...(classes.data || [])
+              .filter((c) => !c.homeroomTeacherId && c.status === 'ACTIVE')
+              .map((c) => ({ icon: GraduationCap, title: 'No head teacher', body: `${c.name} has no head teacher assigned.` })),
+            ...todays
+              .filter((c) => c.logged === 0)
+              .map((c) => ({ icon: ClipboardCheck, title: 'Nothing recorded yet', body: `${c.className} has not recorded attendance or a journal today.` })),
+            ...todays
+              .filter((c) => c.logged > 0 && c.journalState !== 'APPROVED')
+              .map((c) => ({ icon: BookOpen, title: 'Journal not approved', body: `${c.className}: ${c.approved} of ${c.total} entries approved.` })),
+            ...d.healthAlerts
+              .filter((h) => h.date === today)
+              .map((h) => ({
+                icon: HeartPulse,
+                title: `Health: ${h.studentName}`,
+                body: `${label(HEALTH, h.healthStatus)}${h.temperature ? ` · ${h.temperature}°C` : ''}${h.note ? ` · ${h.note}` : ''}`,
+              })),
+          ]
+          const meals = Object.entries(d.nutrition.distribution).map(([k, v]) => ({ label: MEAL[k], value: v }))
+          return (
+            <>
+              <div className="grid stats">
+                <StatCard icon={School} label="Classes" value={d.overview.classes} tint="sky" />
+                <StatCard icon={Baby} label="Students" value={d.overview.students} tint="peach" />
+                <StatCard icon={GraduationCap} label="Teachers" value={d.overview.teachers} tint="lav" />
+                <StatCard icon={CheckCircle2} label="Present Today" value={`${sum('present')} / ${sum('total')}`} tint="mint" />
+                <StatCard icon={BookOpen} label="Journals Approved Today" value={`${done} / ${todays.length}`} hint="classes" tint="cream" />
+                <StatCard icon={MessageCircle} label="Unread Messages" value={db.messages.filter((m) => !m.read).length} hint="between teachers and parents" tint="sky" />
+              </div>
 
-      <div className="grid cols-2">
-        <section className="card">
-          <div className="card-head">
-            <h2>Attendance Overview</h2>
-            <span className="muted small">{fmtDate(today)}</span>
-          </div>
-          <SegBar
-            parts={[
-              { label: 'Present', value: sum('present'), tone: 'success' },
-              { label: 'Absent', value: sum('absent'), tone: 'error' },
-              { label: 'Not recorded', value: sum('unrecorded'), tone: 'neutral' },
-            ]}
-          />
-        </section>
+              <h2 className="section-title">
+                {RANGES.find((r) => r.value === range).label} · {fmtDate(d.range.from)} – {fmtDate(d.range.to)}
+              </h2>
+              <div className="grid stats">
+                <Kpi icon={ClipboardCheck} label="Attendance rate" value={`${d.kpis.attendanceRate}%`} tint="mint" meter={d.kpis.attendanceRate} />
+                <Kpi
+                  icon={BookOpen}
+                  label="Journal submission rate"
+                  value={`${d.kpis.submissionRate}%`}
+                  hint="entries approved / expected"
+                  tint="cream"
+                  meter={d.kpis.submissionRate}
+                />
+                <Kpi
+                  icon={Utensils}
+                  label="Nutrition index"
+                  value={d.kpis.nutritionIndex ?? '—'}
+                  hint="100 = every child ate everything"
+                  tint="peach"
+                  meter={d.kpis.nutritionIndex}
+                />
+                <Kpi icon={HeartPulse} label="Health alerts" value={d.kpis.healthAlerts} hint="children to monitor or unwell" tint="lav" />
+              </div>
 
-        <section className="card">
-          <div className="card-head">
-            <h2>Journal Completion</h2>
-            <span className="muted small">by class</span>
-          </div>
-          <SegBar
-            parts={[
-              { label: 'Completed', value: countOf('Completed'), tone: 'success' },
-              { label: 'In Progress', value: countOf('In Progress'), tone: 'warning' },
-              { label: 'Not Started', value: countOf('Not Started'), tone: 'neutral' },
-            ]}
-          />
-        </section>
-      </div>
-
-      <section className="card table-card" style={{ margin: '16px 0' }}>
-        <div className="card-head pad">
-          <h2>Class Overview</h2>
-          <Link to="/principal/classes">Manage classes</Link>
-        </div>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Class</th>
-              <th>Teacher</th>
-              <th>Students</th>
-              <th>Attendance</th>
-              <th>Journal</th>
-            </tr>
-          </thead>
-          <tbody>
-            {att.map((a, i) => (
-              <tr key={a.cls.id}>
-                <td data-label="Class" className="td-primary">{a.cls.name}</td>
-                <td data-label="Teacher">{byId(db.teachers, a.cls.teacherId)?.name || <span className="muted">Not assigned</span>}</td>
-                <td data-label="Students">{a.total}</td>
-                <td data-label="Attendance">{a.recorded ? `${a.present} present · ${a.absent} absent` : <StatusBadge status="Not recorded" />}</td>
-                <td data-label="Journal">
-                  <StatusBadge status={progress[i]} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <div className="grid cols-2">
-        <section className="card">
-          <div className="card-head">
-            <h2>Camera Overview</h2>
-            <Link className="btn btn-sm" to="/principal/cameras">
-              <Video size={16} /> View Cameras
-            </Link>
-          </div>
-          <ul className="plain-list">
-            {db.cameras.map((c) => (
-              <CameraRow key={c.id} camera={c} />
-            ))}
-          </ul>
-        </section>
-
-        <section className="card">
-          <div className="card-head">
-            <h2>Important Notifications</h2>
-          </div>
-          {attention.length === 0 ? (
-            <EmptyState icon={CheckCircle2} title="You're all caught up." text="Nothing needs your attention right now." />
-          ) : (
-            <ul className="plain-list">
-              {attention.map((n, i) => (
-                <li key={i} className="summary-item">
-                  <span className="summary-icon tint-cream">
-                    <n.icon size={18} />
-                  </span>
-                  <div>
-                    <strong>{n.title}</strong>
-                    <span className="muted block small">{n.body}</span>
+              <div className="grid cols-2">
+                <section className="card">
+                  <div className="card-head">
+                    <h2>Attendance &amp; journal approval</h2>
+                    <span className="muted small">% per school day</span>
                   </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+                  {d.attendanceTrend.length ? <RateTrendChart data={d.attendanceTrend} /> : <EmptyState title="No school days in this period." />}
+                </section>
+                <section className="card">
+                  <div className="card-head">
+                    <h2>Meals eaten</h2>
+                    <span className="muted small">child-meals in the period</span>
+                  </div>
+                  {meals.some((m) => m.value) ? <CategoryBarChart data={meals} valueName="Meals" /> : <EmptyState title="No meals recorded yet." />}
+                </section>
+              </div>
 
-        <section className="card">
-          <div className="card-head">
-            <h2>Recent Activity</h2>
-            <Link to="/principal/audit">Open audit logs</Link>
-          </div>
-          <ActivityList items={db.audit.filter((a) => a.role !== 'System Admin').slice(0, 6)} />
-        </section>
-      </div>
+              <section className="card table-card" style={{ margin: '16px 0' }}>
+                <div className="card-head pad">
+                  <h2>Class Overview</h2>
+                  <Link to="/principal/classes">Manage classes</Link>
+                </div>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Class</th>
+                      <th>Teacher</th>
+                      <th>Today</th>
+                      <th>Journal today</th>
+                      <th>Attendance</th>
+                      <th>Submission</th>
+                      <th>Nutrition</th>
+                      <th>Avg. nap</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {todays.map((c) => {
+                      const p = d.classes.find((x) => x.classId === c.classId)
+                      return (
+                        <tr key={c.classId}>
+                          <td data-label="Class" className="td-primary">
+                            {c.className}
+                          </td>
+                          <td data-label="Teacher">{teacherOf(c.classId) || <span className="muted">Not assigned</span>}</td>
+                          <td data-label="Today">{c.logged ? `${c.present} present · ${c.absent} absent` : <StatusBadge status="Not recorded" />}</td>
+                          <td data-label="Journal today">
+                            <StatusBadge status={JOURNAL_PROGRESS[c.journalState]} />
+                          </td>
+                          <td data-label="Attendance">{p ? `${p.attendanceRate}%` : '—'}</td>
+                          <td data-label="Submission">{p ? `${p.submissionRate}%` : '—'}</td>
+                          <td data-label="Nutrition">{p?.nutritionIndex ?? '—'}</td>
+                          <td data-label="Avg. nap">{p?.avgSleepMinutes ? `${p.avgSleepMinutes} min` : '—'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </section>
+
+              <div className="grid cols-2">
+                <section className="card">
+                  <div className="card-head">
+                    <h2>Camera Overview</h2>
+                    <Link className="btn btn-sm" to="/principal/cameras">
+                      <Video size={16} /> View Cameras
+                    </Link>
+                  </div>
+                  <ul className="plain-list">
+                    {(cams.data || []).map((c) => (
+                      <li key={c.id} className="row-between">
+                        <span>
+                          <strong>
+                            {c.class?.name} · {c.name}
+                          </strong>
+                          <span className="muted block small">
+                            <CameraStatusText cam={c} />
+                          </span>
+                        </span>
+                        <CameraBadge state={c.state} />
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+
+                <section className="card">
+                  <div className="card-head">
+                    <h2>Important Notifications</h2>
+                  </div>
+                  {attention.length === 0 ? (
+                    <EmptyState icon={CheckCircle2} title="You're all caught up." text="Nothing needs your attention right now." />
+                  ) : (
+                    <ul className="plain-list">
+                      {attention.map((n, i) => (
+                        <li key={i} className="summary-item">
+                          <span className="summary-icon tint-cream">
+                            <n.icon size={18} />
+                          </span>
+                          <div>
+                            <strong>{n.title}</strong>
+                            <span className="muted block small">{n.body}</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+
+                <section className="card">
+                  <div className="card-head">
+                    <h2>Recent health alerts</h2>
+                    <Link to="/principal/reports">Health report</Link>
+                  </div>
+                  {d.healthAlerts.length === 0 ? (
+                    <EmptyState icon={HeartPulse} title="No health alerts in this period." />
+                  ) : (
+                    <ul className="plain-list">
+                      {d.healthAlerts.slice(0, 6).map((h) => (
+                        <li key={`${h.studentId}-${h.date}`} className="summary-item">
+                          <span className="summary-icon tint-peach">
+                            <AlertTriangle size={18} />
+                          </span>
+                          <div>
+                            <strong>
+                              {h.studentName} · {fmtDate(h.date)}
+                            </strong>
+                            <span className="muted block small">
+                              {label(HEALTH, h.healthStatus)}
+                              {h.temperature ? ` · ${h.temperature}°C` : ''}
+                              {h.note ? ` · ${h.note}` : ''}
+                            </span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+
+                <section className="card">
+                  <div className="card-head">
+                    <h2>Recent Activity</h2>
+                    <Link to="/principal/audit">Open audit logs</Link>
+                  </div>
+                  <ActivityList items={db.audit.filter((a) => a.role !== 'System Admin').slice(0, 6)} />
+                </section>
+              </div>
+            </>
+          )
+        }}
+      </Loadable>
     </>
   )
 }
@@ -221,81 +319,99 @@ const SCHOOL_FIELDS = [
 ]
 
 export function SchoolProfilePage() {
-  const { db, user, upsert, log } = useStore()
+  const { db, user } = useStore()
   const toast = useToast()
-  const school = byId(db.schools, user.schoolId)
-  const [form, setForm] = useState(school || {})
+  const school = useApi(() => api.schools.mine(), [])
+  const dash = useApi(() => api.reports.dashboard(), [])
+  const [form, setForm] = useState(null)
   const [errors, setErrors] = useState({})
+  const [saving, setSaving] = useState(false)
   const year = db.years.find((y) => y.status === 'Current')
+  const values = form || school.data
 
-  if (!school)
-    return (
-      <div className="card">
-        <EmptyState icon={School} title="No school is linked to this account yet." text="Please contact the system administrator." />
-      </div>
-    )
-
-  const save = (e) => {
+  const save = async (e) => {
     e.preventDefault()
-    const errs = validateFields(SCHOOL_FIELDS, form)
+    const errs = validateFields(SCHOOL_FIELDS, values)
     setErrors(errs)
     if (Object.keys(errs).length) return
-    upsert('schools', { id: school.id, name: form.name.trim(), address: form.address.trim(), phone: form.phone.trim(), email: form.email.trim() })
-    log('Update', 'School Profile', `School information updated: ${form.name}`)
-    toast('School profile saved successfully.')
+    setSaving(true)
+    try {
+      const saved = await api.schools.updateMine({ name: values.name.trim(), address: values.address.trim(), phone: values.phone.trim(), email: values.email.trim() })
+      school.setData(saved)
+      setForm(null)
+      toast('School profile saved successfully.')
+    } catch (err) {
+      toast(errorText(err), 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
     <div className="narrow wide">
       <PageHeader title="School Profile" subtitle="Information shown to teachers and parents" />
-      <form className="card form-card" onSubmit={save} noValidate>
-        <h2>Basic Information</h2>
-        <FormFields fields={SCHOOL_FIELDS} form={form} setForm={setForm} errors={errors} />
-        <dl className="details">
-          <div>
-            <dt>Principal</dt>
-            <dd>{user.name}</dd>
-          </div>
-          <div>
-            <dt>Status</dt>
-            <dd>
-              <StatusBadge status={school.status} />
-            </dd>
-          </div>
-        </dl>
-        <div className="form-actions">
-          <button type="submit" className="btn btn-primary">
-            Save Changes
-          </button>
-        </div>
-      </form>
+      <Loadable q={school} skeleton={<SkeletonTable rows={3} />}>
+        {(s) => (
+          <>
+            <form className="card form-card" onSubmit={save} noValidate>
+              <h2>Basic Information</h2>
+              <FormFields fields={SCHOOL_FIELDS} form={values} setForm={(fn) => setForm((f) => fn(f || s))} errors={errors} />
+              <dl className="details">
+                <div>
+                  <dt>Principal</dt>
+                  <dd>{user.name}</dd>
+                </div>
+                <div>
+                  <dt>Status</dt>
+                  <dd>
+                    <StatusBadge status={statusOf(s)} />
+                  </dd>
+                </div>
+              </dl>
+              <div className="form-actions">
+                <button type="submit" className="btn btn-primary" disabled={saving || !form}>
+                  {saving ? 'Saving…' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
 
-      <div className="card">
-        <h2>School Overview</h2>
-        <dl className="details compact">
-          <div>
-            <dt>Classes</dt>
-            <dd>{db.classes.length}</dd>
-          </div>
-          <div>
-            <dt>Teachers</dt>
-            <dd>{db.teachers.length}</dd>
-          </div>
-          <div>
-            <dt>Students</dt>
-            <dd>{db.students.length}</dd>
-          </div>
-          <div>
-            <dt>Current academic year</dt>
-            <dd>{year?.name || 'Not set'}</dd>
-          </div>
-        </dl>
-      </div>
+            <div className="card">
+              <h2>School Overview</h2>
+              <dl className="details compact">
+                <div>
+                  <dt>Classes</dt>
+                  <dd>{dash.data?.overview.classes ?? '…'}</dd>
+                </div>
+                <div>
+                  <dt>Teachers</dt>
+                  <dd>{dash.data?.overview.teachers ?? '…'}</dd>
+                </div>
+                <div>
+                  <dt>Students</dt>
+                  <dd>{dash.data?.overview.students ?? '…'}</dd>
+                </div>
+                <div>
+                  <dt>Parents</dt>
+                  <dd>{dash.data?.overview.parents ?? '…'}</dd>
+                </div>
+                <div>
+                  <dt>Cameras</dt>
+                  <dd>{dash.data?.overview.cameras ?? '…'}</dd>
+                </div>
+                <div>
+                  <dt>Current academic year</dt>
+                  <dd>{year?.name || 'Not set'}</dd>
+                </div>
+              </dl>
+            </div>
+          </>
+        )}
+      </Loadable>
     </div>
   )
 }
 
-// ---------- Academic Year ----------
+// ---------- Academic Year (local demo data: the backend stores the year on each class) ----------
 
 const YEAR_FIELDS = [
   { name: 'name', label: 'Academic Year', required: true, placeholder: 'e.g. 2027–2028' },
@@ -328,7 +444,9 @@ export function AcademicYearPage() {
     const item = { ...form, name: form.name.trim(), id: editing?.id || uid('y') }
     // Only one year can be current: the previous one is archived.
     mutate((prev) => ({
-      years: [...prev.years.filter((y) => y.id !== item.id), item].map((y) => (item.status === 'Current' && y.id !== item.id && y.status === 'Current' ? { ...y, status: 'Archived' } : y)),
+      years: [...prev.years.filter((y) => y.id !== item.id), item].map((y) =>
+        item.status === 'Current' && y.id !== item.id && y.status === 'Current' ? { ...y, status: 'Archived' } : y,
+      ),
     }))
     log(editing ? 'Update' : 'Create', 'Academic Year', `Academic year ${editing ? 'updated' : 'created'}: ${item.name}`)
     toast(`Academic year ${editing ? 'updated' : 'created'} successfully.`)
@@ -423,11 +541,12 @@ export function AcademicYearPage() {
 // ---------- Classes ----------
 
 export function ClassesPage() {
-  const { db, mutate, upsert, log } = useStore()
   const toast = useToast()
-  const teacherName = (c) => byId(db.teachers, c.teacherId)?.name
-  const yearName = (c) => byId(db.years, c.yearId)?.name
-  const count = (c) => studentsOfClass(db, c.id).length
+  const classes = useClasses()
+  const teachers = usePeople('TEACHER')
+  const rows = classes.data || []
+  const years = [...new Set(rows.map((c) => c.academicYear))].sort().reverse()
+  const teacherName = (c) => c.homeroomTeacher?.fullName
 
   return (
     <CrudPage
@@ -435,53 +554,76 @@ export function ClassesPage() {
       subtitle="Classes of the school and their head teachers"
       noun="Class"
       addLabel="Add Class"
-      rows={db.classes}
+      rows={rows}
+      loading={classes.loading}
+      error={classes.error}
+      onRetry={classes.reload}
       searchText={(c) => `${c.name} ${teacherName(c) || ''}`}
       searchPlaceholder="Search class or teacher"
       filters={[
-        { key: 'year', label: 'academic years', options: db.years.map((y) => ({ value: y.id, label: y.name })), get: (c) => c.yearId },
-        { key: 'status', label: 'statuses', options: ACCOUNT_STATUS, get: (c) => c.status },
+        { key: 'year', label: 'academic years', options: years, get: (c) => c.academicYear },
+        { key: 'status', label: 'statuses', options: ACCOUNT_STATUS, get: statusOf },
       ]}
       columns={[
         { key: 'name', label: 'Class Name', sort: (c) => c.name },
-        { key: 'year', label: 'Academic Year', render: yearName },
+        { key: 'year', label: 'Academic Year', render: (c) => c.academicYear },
+        { key: 'ageGroup', label: 'Age Group' },
         { key: 'teacher', label: 'Head Teacher', render: (c) => teacherName(c) || <span className="muted">Not assigned</span> },
-        { key: 'students', label: 'Students', sort: count, render: count },
-        { key: 'status', label: 'Status', render: (c) => <StatusBadge status={c.status} /> },
+        { key: 'students', label: 'Students', sort: (c) => c.studentCount, render: (c) => c.studentCount },
+        { key: 'status', label: 'Status', render: (c) => <StatusBadge status={statusOf(c)} /> },
       ]}
-      fields={[
+      fields={(form, editing) => [
         { name: 'name', label: 'Class Name', required: true, placeholder: 'e.g. Mặt Trời 3' },
-        { name: 'yearId', label: 'Academic Year', type: 'select', required: true, options: db.years.filter((y) => y.status !== 'Archived').map((y) => ({ value: y.id, label: y.name })) },
         {
-          name: 'teacherId',
+          name: 'academicYear',
+          label: 'Academic Year',
+          required: true,
+          placeholder: '2026-2027',
+          validate: (v) => (!/^\d{4}-\d{4}$/.test(v || '') ? 'Use the form 2026-2027.' : ''),
+        },
+        { name: 'ageGroup', label: 'Age Group', placeholder: 'e.g. 4-5 tuổi' },
+        {
+          name: 'homeroomTeacherId',
           label: 'Head Teacher',
           type: 'select',
           placeholder: 'Not assigned',
-          hint: 'A teacher leads one class. Assigning moves them from their current class.',
-          options: db.teachers.filter((t) => t.status === 'Active').map((t) => ({ value: t.id, label: t.name })),
+          options: (teachers.data || []).filter((t) => t.status === 'ACTIVE').map((t) => ({ value: t.id, label: t.fullName })),
         },
-        { name: 'status', label: 'Status', type: 'select', required: true, options: ACCOUNT_STATUS, placeholder: undefined },
+        ...(editing ? [{ name: 'status', label: 'Status', type: 'select', required: true, options: ACCOUNT_STATUS, placeholder: undefined }] : []),
       ]}
-      initial={(c) => c || { name: '', yearId: db.years.find((y) => y.status === 'Current')?.id || '', teacherId: '', status: 'Active' }}
-      onSave={(form, editing) => {
-        if (db.classes.some((c) => c.name.trim().toLowerCase() === form.name.trim().toLowerCase() && c.id !== editing?.id)) return 'A class with this name already exists.'
-        const id = editing?.id || uid('c')
-        const item = { ...form, id, name: form.name.trim() }
-        mutate((prev) => ({
-          classes: [...(editing ? prev.classes.map((c) => (c.id === id ? item : c)) : [...prev.classes, item])].map((c) =>
-            c.id !== id && item.teacherId && c.teacherId === item.teacherId ? { ...c, teacherId: '' } : c,
-          ),
-        }))
-        log(editing ? 'Update' : 'Create', 'Classes', `Class ${editing ? 'updated' : 'created'}: ${item.name}`)
+      initial={(c) =>
+        c
+          ? { name: c.name, academicYear: c.academicYear, ageGroup: c.ageGroup || '', homeroomTeacherId: c.homeroomTeacherId || '', status: statusOf(c) }
+          : { name: '', academicYear: rows[0]?.academicYear || '2026-2027', ageGroup: '', homeroomTeacherId: '' }
+      }
+      onSave={async (form, editing) => {
+        const body = { name: form.name.trim(), academicYear: form.academicYear.trim(), ageGroup: blankToUndef(form.ageGroup), homeroomTeacherId: form.homeroomTeacherId || null }
+        if (editing) await api.classes.update(editing.id, { ...body, status: STATUS_KEY[form.status] })
+        else await api.classes.create(body)
+        classes.reload()
       }}
       viewRows={(c) => [
         ['Class Name', c.name],
-        ['Academic Year', yearName(c)],
+        ['Academic Year', c.academicYear],
+        ['Age Group', c.ageGroup],
         ['Head Teacher', teacherName(c) || 'Not assigned'],
-        ['Students', count(c)],
-        ['Status', <StatusBadge status={c.status} />],
+        ['Students', c.studentCount],
+        ['Status', <StatusBadge status={statusOf(c)} />],
       ]}
-      actions={(row) => statusActions({ row, coll: 'classes', noun: 'Class', module: 'Classes', upsert, log, toast, lock: false })}
+      actions={(row) => [
+        ...statusActions({ row, name: row.name, noun: 'Class', save: (status) => api.classes.update(row.id, { status }), done: classes.reload, toast, lock: false }),
+        {
+          label: 'Delete',
+          icon: Trash2,
+          danger: true,
+          confirm: { title: `Delete ${row.name}?`, body: 'Only an empty class can be deleted. Move or remove its students first.' },
+          onClick: async () => {
+            await api.classes.remove(row.id)
+            toast(`${row.name} has been deleted.`)
+            classes.reload()
+          },
+        },
+      ]}
       empty={{ icon: School, title: 'No classes have been added yet.' }}
     />
   )
@@ -490,9 +632,14 @@ export function ClassesPage() {
 // ---------- Teachers ----------
 
 export function TeachersPage() {
-  const { db, mutate, upsert, log } = useStore()
   const toast = useToast()
-  const classOf = (t) => db.classes.find((c) => c.teacherId === t.id)
+  const teachers = usePeople('TEACHER')
+  const classes = useClasses()
+  const classesOf = (t) => (classes.data || []).filter((c) => c.homeroomTeacherId === t.id)
+  const reload = () => {
+    teachers.reload()
+    classes.reload()
+  }
 
   return (
     <CrudPage
@@ -500,63 +647,87 @@ export function TeachersPage() {
       subtitle="Teacher accounts are created by the principal"
       noun="Teacher"
       addLabel="Add Teacher"
-      rows={db.teachers}
-      searchText={(t) => `${t.name} ${t.phone} ${t.email} ${classOf(t)?.name || ''}`}
+      rows={teachers.data || []}
+      loading={teachers.loading}
+      error={teachers.error}
+      onRetry={teachers.reload}
+      searchText={(t) =>
+        `${t.fullName} ${t.phone} ${t.email || ''} ${classesOf(t)
+          .map((c) => c.name)
+          .join(' ')}`
+      }
       searchPlaceholder="Search name, phone or class"
-      filters={[{ key: 'status', label: 'statuses', options: ['Active', 'Inactive', 'Locked'], get: (t) => t.status }]}
+      filters={[{ key: 'status', label: 'statuses', options: USER_STATUS, get: statusOf }]}
       columns={[
         {
           key: 'name',
           label: 'Name',
-          sort: (t) => t.name,
+          sort: (t) => t.fullName,
           render: (t) => (
             <span className="cell-user">
-              <Avatar name={t.name} size={34} /> {t.name}
+              <Avatar name={t.fullName} size={34} /> {t.fullName}
             </span>
           ),
         },
         { key: 'phone', label: 'Phone' },
         { key: 'email', label: 'Email' },
-        { key: 'class', label: 'Assigned Class', render: (t) => classOf(t)?.name || <span className="muted">Not assigned</span> },
-        { key: 'status', label: 'Status', render: (t) => <StatusBadge status={t.status} /> },
+        {
+          key: 'class',
+          label: 'Assigned Class',
+          render: (t) =>
+            classesOf(t)
+              .map((c) => c.name)
+              .join(', ') || <span className="muted">Not assigned</span>,
+        },
+        { key: 'status', label: 'Status', render: (t) => <StatusBadge status={statusOf(t)} /> },
         { key: 'lastLogin', label: 'Last Login', render: lastLogin },
       ]}
       fields={(form, editing) => [
-        { name: 'name', label: 'Full Name', required: true },
+        { name: 'fullName', label: 'Full Name', required: true },
         { name: 'phone', label: 'Phone', type: 'tel', required: true, hint: editing ? undefined : `Used to sign in. Initial password: ${DEMO_PASSWORD}` },
-        { name: 'email', label: 'Email', type: 'email', required: true },
+        { name: 'email', label: 'Email', type: 'email' },
         {
           name: 'classId',
           label: 'Assigned Class',
           type: 'select',
           placeholder: 'Not assigned',
-          options: db.classes.map((c) => ({ value: c.id, label: c.name })),
+          options: (classes.data || []).map((c) => ({
+            value: c.id,
+            label: `${c.name}${c.homeroomTeacher && c.homeroomTeacherId !== editing?.id ? ` (now: ${c.homeroomTeacher.fullName})` : ''}`,
+          })),
           hint: 'Assigning replaces the current head teacher of that class.',
         },
-        { name: 'status', label: 'Status', type: 'select', required: true, options: ['Active', 'Inactive', 'Locked'], placeholder: undefined },
       ]}
-      initial={(t) => (t ? { ...t, classId: classOf(t)?.id || '' } : { name: '', phone: '', email: '', classId: '', status: 'Active' })}
-      onSave={({ classId, ...form }, editing) => {
-        if (phoneTaken(db, form.phone, editing?.id)) return 'This phone number is already used by another account.'
-        const id = editing?.id || uid('t')
-        mutate((prev) => ({
-          teachers: editing ? prev.teachers.map((t) => (t.id === id ? { ...t, ...form } : t)) : [{ ...form, id, createdAt: Date.now(), lastLogin: null }, ...prev.teachers],
-          classes: prev.classes.map((c) => (c.id === classId ? { ...c, teacherId: id } : c.teacherId === id ? { ...c, teacherId: '' } : c)),
-        }))
-        log(editing ? 'Update' : 'Create', 'Teachers', `Teacher account ${editing ? 'updated' : 'created'}: ${form.name}`)
+      initial={(t) =>
+        t ? { fullName: t.fullName, phone: t.phone, email: t.email || '', classId: classesOf(t)[0]?.id || '' } : { fullName: '', phone: '', email: '', classId: '' }
+      }
+      onSave={async ({ classId, ...form }, editing) => {
+        const body = { fullName: form.fullName.trim(), phone: form.phone.trim(), email: blankToUndef(form.email) }
+        const saved = editing ? await api.users.update(editing.id, body) : await api.users.create({ ...body, role: 'TEACHER' })
+        const before = editing ? classesOf(editing)[0]?.id || '' : ''
+        if (classId !== before) {
+          if (before) await api.classes.update(before, { homeroomTeacherId: null })
+          if (classId) await api.classes.update(classId, { homeroomTeacherId: saved.id })
+        }
+        reload()
       }}
       viewRows={(t) => [
-        ['Full Name', t.name],
+        ['Full Name', t.fullName],
         ['Phone', t.phone],
         ['Email', t.email],
-        ['Assigned Class', classOf(t)?.name || 'Not assigned'],
-        ['Status', <StatusBadge status={t.status} />],
-        ['Created Date', created(t.createdAt)],
-        ['Last Login', t.lastLogin ? fmtDateTime(t.lastLogin) : 'Never'],
+        [
+          'Assigned Class',
+          classesOf(t)
+            .map((c) => c.name)
+            .join(', ') || 'Not assigned',
+        ],
+        ['Status', <StatusBadge status={statusOf(t)} />],
+        ['Created Date', dateOf(t.createdAt)],
+        ['Last Login', t.lastLoginAt ? fmtDateTime(new Date(t.lastLoginAt).getTime()) : 'Never'],
       ]}
       actions={(row) => [
-        resetPasswordAction({ row, noun: 'Teacher', module: 'Teachers', mutate, log, toast }),
-        ...statusActions({ row, coll: 'teachers', noun: 'Teacher', module: 'Teachers', upsert, log, toast }),
+        resetPasswordAction({ row, reset: () => api.users.resetPassword(row.id), toast }),
+        ...statusActions({ row, noun: 'Teacher', save: (s) => api.users.setStatus(row.id, s), done: teachers.reload, toast }),
       ]}
       empty={{ icon: GraduationCap, title: 'No teacher accounts yet.' }}
     />
@@ -565,15 +736,17 @@ export function TeachersPage() {
 
 // ---------- Students ----------
 
+const parentsText = (s) =>
+  s.parentLinks
+    .map((l) => l.parent?.fullName)
+    .filter(Boolean)
+    .join(', ')
+
 export function StudentsPage() {
-  const { db, mutate, log, notify } = useStore()
   const toast = useToast()
-  const className = (s) => byId(db.classes, s.classId)?.name
-  const parentsOf = (s) =>
-    linksOfStudent(db, s.id)
-      .map((l) => byId(db.parents, l.parentId)?.name)
-      .filter(Boolean)
-      .join(', ')
+  const students = useStudents()
+  const classes = useClasses()
+  const parents = usePeople('PARENT')
 
   return (
     <CrudPage
@@ -581,36 +754,45 @@ export function StudentsPage() {
       subtitle="Students are added and managed by the principal"
       noun="Student"
       addLabel="Add Student"
-      rows={db.students}
-      searchText={(s) => `${s.name} ${className(s) || ''} ${parentsOf(s)}`}
+      rows={students.data || []}
+      loading={students.loading}
+      error={students.error}
+      onRetry={students.reload}
+      searchText={(s) => `${s.fullName} ${s.class?.name || ''} ${parentsText(s)}`}
       searchPlaceholder="Search student, class or parent"
       filters={[
-        { key: 'class', label: 'classes', options: db.classes.map((c) => ({ value: c.id, label: c.name })), get: (s) => s.classId },
-        { key: 'status', label: 'statuses', options: ACCOUNT_STATUS, get: (s) => s.status },
+        { key: 'class', label: 'classes', options: (classes.data || []).map((c) => ({ value: c.id, label: c.name })), get: (s) => s.classId },
+        { key: 'status', label: 'statuses', options: ACCOUNT_STATUS, get: statusOf },
       ]}
       columns={[
         {
           key: 'name',
           label: 'Full Name',
-          sort: (s) => s.name,
+          sort: (s) => s.fullName,
           render: (s) => (
             <span className="cell-user">
-              <Avatar name={s.name} src={s.photo} size={34} /> {s.name}
+              <Avatar name={s.fullName} src={s.avatarUrl} size={34} /> {s.fullName}
             </span>
           ),
         },
-        { key: 'dob', label: 'Date of Birth', sort: (s) => s.dob, render: (s) => fmtDate(s.dob) },
-        { key: 'gender', label: 'Gender' },
-        { key: 'class', label: 'Class', render: (s) => className(s) || <span className="muted">Not assigned</span> },
-        { key: 'parent', label: 'Parent', render: (s) => parentsOf(s) || <span className="muted">Not linked</span> },
-        { key: 'status', label: 'Status', render: (s) => <StatusBadge status={s.status} /> },
+        { key: 'dob', label: 'Date of Birth', sort: (s) => s.dateOfBirth, render: (s) => fmtDate(s.dateOfBirth) },
+        { key: 'gender', label: 'Gender', render: (s) => label(GENDER, s.gender) },
+        { key: 'class', label: 'Class', render: (s) => s.class?.name },
+        { key: 'parent', label: 'Parent', render: (s) => parentsText(s) || <span className="muted">Not linked</span> },
+        { key: 'allergies', label: 'Allergies', render: (s) => s.allergies || <span className="muted">None</span> },
+        { key: 'status', label: 'Status', render: (s) => <StatusBadge status={statusOf(s)} /> },
       ]}
-      fields={(form) => [
-        { name: 'photo', label: 'Photo', type: 'photo', full: true },
-        { name: 'name', label: 'Full Name', required: true },
-        { name: 'dob', label: 'Date of Birth', type: 'date', required: true, validate: (v) => (v > todayISO() ? 'Date of birth cannot be in the future.' : '') },
-        { name: 'gender', label: 'Gender', type: 'select', required: true, options: ['Male', 'Female'] },
-        { name: 'classId', label: 'Class', type: 'select', required: true, options: db.classes.filter((c) => c.status === 'Active').map((c) => ({ value: c.id, label: c.name })) },
+      fields={(form, editing) => [
+        { name: 'fullName', label: 'Full Name', required: true },
+        { name: 'dateOfBirth', label: 'Date of Birth', type: 'date', required: true, validate: (v) => (v > todayISO() ? 'Date of birth cannot be in the future.' : '') },
+        { name: 'gender', label: 'Gender', type: 'select', required: true, options: GENDER_OPTIONS },
+        {
+          name: 'classId',
+          label: 'Class',
+          type: 'select',
+          required: true,
+          options: (classes.data || []).filter((c) => c.status === 'ACTIVE').map((c) => ({ value: c.id, label: c.name })),
+        },
         // A new student usually arrives with a parent who has no account yet, so the parent can be created right here.
         {
           name: 'parentMode',
@@ -621,7 +803,7 @@ export function StudentsPage() {
           options: [
             { value: 'new', label: 'New parent — create an account now' },
             { value: 'existing', label: 'Parent already has an account (e.g. a sibling is enrolled)' },
-            { value: 'later', label: 'Add the parent later' },
+            { value: 'later', label: editing ? 'Keep the current parents' : 'Add the parent later' },
           ],
         },
         ...(form.parentMode === 'new'
@@ -631,68 +813,82 @@ export function StudentsPage() {
             ]
           : []),
         ...(form.parentMode === 'existing'
-          ? [{ name: 'parentId', label: 'Parent', type: 'combobox', required: true, placeholder: 'Search parent by name or phone', options: db.parents.map((p) => ({ value: p.id, label: p.name, sub: p.phone })) }]
+          ? [
+              {
+                name: 'parentId',
+                label: 'Parent',
+                type: 'combobox',
+                required: true,
+                placeholder: 'Search parent by name or phone',
+                options: (parents.data || []).map((p) => ({ value: p.id, label: p.fullName, sub: p.phone })),
+              },
+            ]
           : []),
-        ...(form.parentMode !== 'later' ? [{ name: 'relationship', label: 'Relationship to the child', type: 'select', options: RELATIONSHIPS, placeholder: undefined }] : []),
-        { name: 'status', label: 'Status', type: 'select', required: true, options: ACCOUNT_STATUS, placeholder: undefined },
-        { name: 'note', label: 'Notes for the teacher', type: 'textarea', rows: 3, placeholder: 'Allergies, pick-up arrangements, things the teacher should know' },
+        ...(form.parentMode !== 'later'
+          ? [{ name: 'relationship', label: 'Relationship to the child', type: 'select', options: RELATIONSHIP_OPTIONS, placeholder: undefined }]
+          : []),
+        ...(editing ? [{ name: 'status', label: 'Status', type: 'select', required: true, options: ACCOUNT_STATUS, placeholder: undefined }] : []),
+        { name: 'allergies', label: 'Allergies', placeholder: 'e.g. Dị ứng tôm, đậu phộng', hint: 'Shown to the teacher on every journal.' },
+        { name: 'medicalNote', label: 'Medical notes', type: 'textarea', rows: 3, placeholder: 'Medication, pick-up arrangements, things the teacher should know' },
       ]}
-      initial={(s) => {
-        const link = s && linksOfStudent(db, s.id)[0]
-        return s
-          ? { ...s, parentMode: link ? 'existing' : 'later', parentId: link?.parentId || '', relationship: link?.relationship || 'Mother' }
-          : { photo: '', name: '', dob: '', gender: '', classId: '', parentMode: 'new', parentName: '', parentPhone: '', parentId: '', relationship: 'Mother', status: 'Active', note: '' }
-      }}
-      onSave={({ parentMode, parentId, parentName, parentPhone, relationship, ...form }, editing) => {
-        const id = editing?.id || uid('st')
-        const student = { ...form, id, name: form.name.trim() }
-        let newParent = null
-        if (parentMode === 'new') {
-          if (phoneTaken(db, parentPhone)) return "This parent's phone number already belongs to an account. Choose “Parent already has an account” instead."
-          newParent = { id: uid('par'), name: parentName.trim(), phone: parentPhone.trim(), email: '', address: '', status: 'Active', cameraAccess: true, createdAt: Date.now(), lastLogin: null }
-        }
-        const linkTo = newParent?.id || (parentMode === 'existing' ? parentId : '')
-        mutate((prev) => {
-          let links = prev.links
-          if (linkTo) {
-            const same = links.find((l) => l.studentId === id && l.parentId === linkTo)
-            const first = links.find((l) => l.studentId === id)
-            if (same) links = links.map((l) => (l.id === same.id ? { ...l, relationship } : l))
-            else if (first && !newParent) links = links.map((l) => (l.id === first.id ? { ...l, parentId: linkTo, relationship } : l))
-            else links = [...links, { id: uid('l'), parentId: linkTo, studentId: id, relationship, status: 'Active' }]
-          }
-          return {
-            students: editing ? prev.students.map((s) => (s.id === id ? student : s)) : [...prev.students, student],
-            parents: newParent ? [newParent, ...prev.parents] : prev.parents,
-            links,
-          }
-        })
-        if (newParent) log('Create', 'Parents', `Parent account created: ${newParent.name}`)
-        // The class teacher sees the roster change straight away and is told about it.
-        const cls = byId(db.classes, student.classId)
-        if (cls?.teacherId && (!editing || editing.classId !== student.classId))
-          notify({ role: 'teacher', userId: cls.teacherId, type: 'system', title: 'Class roster updated', body: `${student.name} was added to ${cls.name}.` })
-        log(editing ? 'Update' : 'Create', 'Students', `Student ${editing ? 'information updated' : 'added'}: ${student.name}`)
+      initial={(s) =>
+        s
+          ? {
+              fullName: s.fullName,
+              dateOfBirth: s.dateOfBirth,
+              gender: s.gender,
+              classId: s.classId,
+              parentMode: 'later',
+              parentId: '',
+              relationship: 'MOTHER',
+              status: statusOf(s),
+              allergies: s.allergies || '',
+              medicalNote: s.medicalNote || '',
+            }
+          : {
+              fullName: '',
+              dateOfBirth: '',
+              gender: '',
+              classId: '',
+              parentMode: 'new',
+              parentName: '',
+              parentPhone: '',
+              parentId: '',
+              relationship: 'MOTHER',
+              allergies: '',
+              medicalNote: '',
+            }
+      }
+      onSave={async ({ parentMode, parentId, parentName, parentPhone, relationship, status, ...form }, editing) => {
+        // Create the parent first: a phone number already in use fails before the student is created.
+        let linkTo = parentMode === 'existing' ? parentId : ''
+        if (parentMode === 'new') linkTo = (await api.users.create({ fullName: parentName.trim(), phone: parentPhone.trim(), role: 'PARENT' })).id
+        const body = { ...form, fullName: form.fullName.trim(), allergies: blankToNull(form.allergies), medicalNote: blankToNull(form.medicalNote) }
+        const saved = editing ? await api.students.update(editing.id, { ...body, status: STATUS_KEY[status] }) : await api.students.create(body)
+        if (linkTo) await api.students.linkParent(saved.id, linkTo, relationship, !saved.parentLinks?.length)
+        students.reload()
+        if (parentMode === 'new') parents.reload()
       }}
       viewRows={(s) => [
-        ['Full Name', s.name],
-        ['Date of Birth', fmtDate(s.dob)],
-        ['Gender', s.gender],
-        ['Class', className(s)],
-        ['Parent', parentsOf(s)],
-        ['Status', <StatusBadge status={s.status} />],
-        ['Notes', s.note],
+        ['Full Name', s.fullName],
+        ['Date of Birth', fmtDate(s.dateOfBirth)],
+        ['Gender', label(GENDER, s.gender)],
+        ['Class', s.class?.name],
+        ['Parent', s.parentLinks.map((l) => `${l.parent?.fullName} (${label(RELATIONSHIP, l.relationship)})`).join(', ')],
+        ['Allergies', s.allergies],
+        ['Medical notes', s.medicalNote],
+        ['Status', <StatusBadge status={statusOf(s)} />],
       ]}
       actions={(row) => [
         {
           label: 'Delete',
           icon: Trash2,
           danger: true,
-          confirm: { title: `Delete ${row.name}?`, body: 'The student is removed from the class roster and from linked parent accounts. This cannot be undone.' },
-          onClick: () => {
-            mutate((prev) => ({ students: prev.students.filter((s) => s.id !== row.id), links: prev.links.filter((l) => l.studentId !== row.id) }))
-            log('Delete', 'Students', `Student deleted: ${row.name}`)
-            toast(`${row.name} has been deleted.`)
+          confirm: { title: `Delete ${row.fullName}?`, body: 'The student, their journals and photos, and the links to parent accounts are removed. This cannot be undone.' },
+          onClick: async () => {
+            await api.students.remove(row.id)
+            toast(`${row.fullName} has been deleted.`)
+            students.reload()
           },
         },
       ]}
@@ -704,15 +900,20 @@ export function StudentsPage() {
 // ---------- Parents ----------
 
 export function ParentsPage() {
-  const { db, mutate, upsert, log, notify } = useStore()
   const toast = useToast()
-  const linksOf = (p) => db.links.filter((l) => l.parentId === p.id)
+  const parents = usePeople('PARENT')
+  const students = useStudents()
+  const classes = useClasses()
+  const linksOf = (p) => (students.data || []).flatMap((s) => s.parentLinks.filter((l) => l.parentId === p.id).map((l) => ({ ...l, student: s })))
   const children = (p) =>
     linksOf(p)
-      .map((l) => byId(db.students, l.studentId)?.name)
-      .filter(Boolean)
+      .map((l) => l.student.fullName)
       .join(', ')
-  const relation = (p) => [...new Set(linksOf(p).map((l) => l.relationship))].join(', ')
+  const relation = (p) => [...new Set(linksOf(p).map((l) => label(RELATIONSHIP, l.relationship)))].join(', ')
+  const reload = () => {
+    parents.reload()
+    students.reload()
+  }
 
   return (
     <CrudPage
@@ -720,18 +921,21 @@ export function ParentsPage() {
       subtitle="Parent accounts are created by the school. Parents cannot register themselves."
       noun="Parent"
       addLabel="Add Parent"
-      rows={db.parents}
-      searchText={(p) => `${p.name} ${p.phone} ${p.email} ${children(p)}`}
+      rows={parents.data || []}
+      loading={parents.loading}
+      error={parents.error}
+      onRetry={parents.reload}
+      searchText={(p) => `${p.fullName} ${p.phone} ${p.email || ''} ${children(p)}`}
       searchPlaceholder="Search parent, phone or child"
-      filters={[{ key: 'status', label: 'statuses', options: ACCOUNT_STATUS, get: (p) => p.status }]}
+      filters={[{ key: 'status', label: 'statuses', options: USER_STATUS, get: statusOf }]}
       columns={[
         {
           key: 'name',
           label: 'Name',
-          sort: (p) => p.name,
+          sort: (p) => p.fullName,
           render: (p) => (
             <span className="cell-user">
-              <Avatar name={p.name} size={34} /> {p.name}
+              <Avatar name={p.fullName} size={34} /> {p.fullName}
             </span>
           ),
         },
@@ -740,13 +944,12 @@ export function ParentsPage() {
         { key: 'address', label: 'Address' },
         { key: 'child', label: 'Child', render: (p) => children(p) || <span className="muted">Not linked</span> },
         { key: 'relationship', label: 'Relationship', render: (p) => relation(p) || '—' },
-        { key: 'status', label: 'Status', render: (p) => <StatusBadge status={p.status} /> },
+        { key: 'status', label: 'Status', render: (p) => <StatusBadge status={statusOf(p)} /> },
       ]}
       fields={(form, editing) => [
-        { name: 'name', label: 'Full Name', required: true },
+        { name: 'fullName', label: 'Full Name', required: true },
         { name: 'phone', label: 'Phone', type: 'tel', required: true, hint: editing ? undefined : `Used to sign in. Initial password: ${DEMO_PASSWORD}` },
-        { name: 'email', label: 'Email', type: 'email', hint: 'Needed for the parent to reset a forgotten password.' },
-        { name: 'status', label: 'Account Status', type: 'select', required: true, options: ACCOUNT_STATUS, placeholder: undefined },
+        { name: 'email', label: 'Email', type: 'email' },
         { name: 'address', label: 'Address', full: true },
         // The child may not be enrolled yet, so a new parent can bring a new student with them.
         {
@@ -758,15 +961,21 @@ export function ParentsPage() {
           options: [
             { value: 'new', label: 'New student — enrol the child now' },
             { value: 'existing', label: 'Child is already a student of the school' },
-            { value: 'later', label: 'Link a child later' },
+            { value: 'later', label: editing ? 'Keep the current children' : 'Link a child later' },
           ],
         },
         ...(form.childMode === 'new'
           ? [
               { name: 'childName', label: 'Child Full Name', required: true },
               { name: 'childDob', label: 'Child Date of Birth', type: 'date', required: true, validate: (v) => (v > todayISO() ? 'Date of birth cannot be in the future.' : '') },
-              { name: 'childGender', label: 'Child Gender', type: 'select', required: true, options: ['Male', 'Female'] },
-              { name: 'childClassId', label: 'Class', type: 'select', required: true, options: db.classes.filter((c) => c.status === 'Active').map((c) => ({ value: c.id, label: c.name })) },
+              { name: 'childGender', label: 'Child Gender', type: 'select', required: true, options: GENDER_OPTIONS },
+              {
+                name: 'childClassId',
+                label: 'Class',
+                type: 'select',
+                required: true,
+                options: (classes.data || []).filter((c) => c.status === 'ACTIVE').map((c) => ({ value: c.id, label: c.name })),
+              },
             ]
           : []),
         ...(form.childMode === 'existing'
@@ -777,86 +986,76 @@ export function ParentsPage() {
                 type: 'combobox',
                 required: true,
                 placeholder: 'Search child by name',
-                options: db.students.map((s) => ({ value: s.id, label: s.name, sub: byId(db.classes, s.classId)?.name })),
+                options: (students.data || []).map((s) => ({ value: s.id, label: s.fullName, sub: s.class?.name })),
               },
             ]
           : []),
-        ...(form.childMode !== 'later' ? [{ name: 'relationship', label: 'Relationship to the child', type: 'select', options: RELATIONSHIPS, placeholder: undefined }] : []),
-        {
-          name: 'cameraAccess',
-          label: 'Classroom Camera',
-          type: 'select',
-          placeholder: undefined,
-          options: [
-            { value: 'yes', label: 'Allowed during scheduled times' },
-            { value: 'no', label: 'Not allowed' },
-          ],
-        },
+        ...(form.childMode !== 'later'
+          ? [{ name: 'relationship', label: 'Relationship to the child', type: 'select', options: RELATIONSHIP_OPTIONS, placeholder: undefined }]
+          : []),
       ]}
-      initial={(p) => {
-        const link = p && linksOf(p)[0]
-        return p
-          ? { ...p, childMode: link ? 'existing' : 'later', studentId: link?.studentId || '', relationship: link?.relationship || 'Mother', cameraAccess: p.cameraAccess === false ? 'no' : 'yes' }
-          : { name: '', phone: '', email: '', address: '', childMode: 'new', childName: '', childDob: '', childGender: '', childClassId: '', studentId: '', relationship: 'Mother', status: 'Active', cameraAccess: 'yes' }
-      }}
-      onSave={({ childMode, studentId, childName, childDob, childGender, childClassId, relationship, cameraAccess, ...form }, editing) => {
-        if (phoneTaken(db, form.phone, editing?.id)) return 'This phone number is already used by another account.'
-        const id = editing?.id || uid('par')
-        const parent = { ...form, id, name: form.name.trim(), phone: form.phone.trim(), email: (form.email || '').trim(), cameraAccess: cameraAccess === 'yes' }
-        const newStudent = childMode === 'new' ? { id: uid('st'), name: childName.trim(), dob: childDob, gender: childGender, classId: childClassId, status: 'Active', note: '', photo: '' } : null
-        const linkTo = newStudent?.id || (childMode === 'existing' ? studentId : '')
-        mutate((prev) => {
-          let links = prev.links
-          if (linkTo) {
-            const same = links.find((l) => l.parentId === id && l.studentId === linkTo)
-            const first = links.find((l) => l.parentId === id)
-            if (same) links = links.map((l) => (l.id === same.id ? { ...l, relationship } : l))
-            else if (first && !newStudent) links = links.map((l) => (l.id === first.id ? { ...l, studentId: linkTo, relationship } : l))
-            else links = [...links, { id: uid('l'), parentId: id, studentId: linkTo, relationship, status: 'Active' }]
-          }
-          return {
-            parents: editing ? prev.parents.map((p) => (p.id === id ? { ...p, ...parent } : p)) : [{ ...parent, createdAt: Date.now(), lastLogin: null }, ...prev.parents],
-            students: newStudent ? [...prev.students, newStudent] : prev.students,
-            links,
-          }
-        })
-        if (newStudent) {
-          const cls = byId(db.classes, newStudent.classId)
-          if (cls?.teacherId) notify({ role: 'teacher', userId: cls.teacherId, type: 'system', title: 'Class roster updated', body: `${newStudent.name} was added to ${cls.name}.` })
-          log('Create', 'Students', `Student added: ${newStudent.name}`)
-        }
-        log(editing ? 'Update' : 'Create', 'Parents', `Parent account ${editing ? 'updated' : 'created'}: ${parent.name}`)
+      initial={(p) =>
+        p
+          ? { fullName: p.fullName, phone: p.phone, email: p.email || '', address: p.address || '', childMode: 'later', studentId: '', relationship: 'MOTHER' }
+          : {
+              fullName: '',
+              phone: '',
+              email: '',
+              address: '',
+              childMode: 'new',
+              childName: '',
+              childDob: '',
+              childGender: '',
+              childClassId: '',
+              studentId: '',
+              relationship: 'MOTHER',
+            }
+      }
+      onSave={async ({ childMode, studentId, childName, childDob, childGender, childClassId, relationship, ...form }, editing) => {
+        const body = { fullName: form.fullName.trim(), phone: form.phone.trim(), email: blankToUndef(form.email), address: blankToUndef(form.address) }
+        const saved = editing ? await api.users.update(editing.id, body) : await api.users.create({ ...body, role: 'PARENT' })
+        let linkTo = childMode === 'existing' ? studentId : ''
+        if (childMode === 'new') linkTo = (await api.students.create({ fullName: childName.trim(), dateOfBirth: childDob, gender: childGender, classId: childClassId })).id
+        if (linkTo) await api.students.linkParent(linkTo, saved.id, relationship, false)
+        reload()
       }}
       viewRows={(p) => [
-        ['Full Name', p.name],
+        ['Full Name', p.fullName],
         ['Phone', p.phone],
         ['Email', p.email],
         ['Address', p.address],
         ['Child', children(p)],
         ['Relationship', relation(p)],
-        ['Classroom Camera', p.cameraAccess === false ? 'Not allowed' : 'Allowed during scheduled times'],
-        ['Account Status', <StatusBadge status={p.status} />],
-        ['Last Login', p.lastLogin ? fmtDateTime(p.lastLogin) : 'Never'],
+        ['Account Status', <StatusBadge status={statusOf(p)} />],
+        ['Last Login', p.lastLoginAt ? fmtDateTime(new Date(p.lastLoginAt).getTime()) : 'Never'],
       ]}
       actions={(row) => [
-        resetPasswordAction({ row, noun: 'Parent', module: 'Parents', mutate, log, toast }),
-        ...statusActions({ row, coll: 'parents', noun: 'Parent', module: 'Parents', upsert, log, toast, lock: false }),
+        resetPasswordAction({ row, reset: () => api.users.resetPassword(row.id), toast }),
+        ...statusActions({ row, noun: 'Parent', save: (s) => api.users.setStatus(row.id, s), done: parents.reload, toast }),
       ]}
       empty={{ icon: Users, title: 'No parent accounts yet.' }}
     />
   )
 }
 
-// ---------- Parent–Child Relationships ----------
+// ---------- Parent–Child Relationships (parent_student_map) ----------
 
 export function RelationshipsPage() {
-  const { db, upsert, remove, log } = useStore()
   const toast = useToast()
-  const rows = db.links.map((l) => {
-    const parent = byId(db.parents, l.parentId)
-    const student = byId(db.students, l.studentId)
-    return { ...l, parent, student, className: byId(db.classes, student?.classId)?.name, name: `${parent?.name || 'Unknown'} → ${student?.name || 'Unknown'}` }
-  })
+  const students = useStudents()
+  const parents = usePeople('PARENT')
+  const rows = (students.data || []).flatMap((s) =>
+    s.parentLinks.map((l) => ({
+      id: `${l.parentId}:${s.id}`,
+      parentId: l.parentId,
+      studentId: s.id,
+      parent: l.parent,
+      student: s,
+      relationship: l.relationship,
+      isPrimary: l.isPrimary,
+    })),
+  )
+  const name = (r) => `${r.parent?.fullName || 'Unknown'} → ${r.student.fullName}`
 
   return (
     <CrudPage
@@ -865,56 +1064,78 @@ export function RelationshipsPage() {
       noun="Relationship"
       addLabel="Link Parent & Child"
       rows={rows}
-      searchText={(r) => `${r.name} ${r.relationship} ${r.className || ''}`}
+      loading={students.loading}
+      error={students.error}
+      onRetry={students.reload}
+      searchText={(r) => `${name(r)} ${label(RELATIONSHIP, r.relationship)} ${r.student.class?.name || ''}`}
       searchPlaceholder="Search parent or child"
-      filters={[
-        { key: 'relationship', label: 'relationships', options: RELATIONSHIPS, get: (r) => r.relationship },
-        { key: 'status', label: 'statuses', options: ACCOUNT_STATUS, get: (r) => r.status },
-      ]}
+      filters={[{ key: 'relationship', label: 'relationships', options: RELATIONSHIP_OPTIONS, get: (r) => r.relationship }]}
       columns={[
-        { key: 'parent', label: 'Parent', sort: (r) => r.parent?.name || '', render: (r) => r.parent?.name || '—' },
-        { key: 'child', label: 'Child', sort: (r) => r.student?.name || '', render: (r) => r.student?.name || '—' },
-        { key: 'relationship', label: 'Relationship' },
-        { key: 'className', label: 'Class' },
-        { key: 'status', label: 'Status', render: (r) => <StatusBadge status={r.status} /> },
+        { key: 'parent', label: 'Parent', sort: (r) => r.parent?.fullName || '', render: (r) => r.parent?.fullName || '—' },
+        { key: 'phone', label: 'Parent Phone', render: (r) => r.parent?.phone },
+        { key: 'child', label: 'Child', sort: (r) => r.student.fullName, render: (r) => r.student.fullName },
+        { key: 'relationship', label: 'Relationship', render: (r) => label(RELATIONSHIP, r.relationship) },
+        { key: 'className', label: 'Class', render: (r) => r.student.class?.name },
+        { key: 'primary', label: 'Primary contact', render: (r) => (r.isPrimary ? <span className="chip">Yes</span> : <span className="muted">—</span>) },
       ]}
       fields={[
-        { name: 'parentId', label: 'Parent', type: 'combobox', required: true, placeholder: 'Search parent by name or phone', options: db.parents.map((p) => ({ value: p.id, label: p.name, sub: p.phone })) },
+        {
+          name: 'parentId',
+          label: 'Parent',
+          type: 'combobox',
+          required: true,
+          placeholder: 'Search parent by name or phone',
+          options: (parents.data || []).map((p) => ({ value: p.id, label: p.fullName, sub: p.phone })),
+        },
         {
           name: 'studentId',
           label: 'Child',
           type: 'combobox',
           required: true,
           placeholder: 'Search child by name',
-          options: db.students.map((s) => ({ value: s.id, label: s.name, sub: byId(db.classes, s.classId)?.name })),
+          options: (students.data || []).map((s) => ({ value: s.id, label: s.fullName, sub: s.class?.name })),
         },
-        { name: 'relationship', label: 'Relationship', type: 'select', required: true, options: RELATIONSHIPS, placeholder: undefined },
-        { name: 'status', label: 'Status', type: 'select', required: true, options: ACCOUNT_STATUS, placeholder: undefined },
+        { name: 'relationship', label: 'Relationship', type: 'select', required: true, options: RELATIONSHIP_OPTIONS, placeholder: undefined },
+        {
+          name: 'isPrimary',
+          label: 'Primary contact',
+          type: 'select',
+          placeholder: undefined,
+          options: [
+            { value: 'no', label: 'No' },
+            { value: 'yes', label: 'Yes — the school calls this parent first' },
+          ],
+        },
       ]}
-      initial={(r) => (r ? { id: r.id, parentId: r.parentId, studentId: r.studentId, relationship: r.relationship, status: r.status } : { parentId: '', studentId: '', relationship: 'Mother', status: 'Active' })}
-      onSave={(form, editing) => {
-        if (db.links.some((l) => l.parentId === form.parentId && l.studentId === form.studentId && l.id !== editing?.id)) return 'This parent is already linked to this child.'
-        upsert('links', { ...form, id: editing?.id || uid('l') })
-        log(editing ? 'Update' : 'Create', 'Relationships', `Parent relationship ${editing ? 'updated' : 'created'}: ${byId(db.parents, form.parentId)?.name} → ${byId(db.students, form.studentId)?.name}`)
+      initial={(r) =>
+        r
+          ? { parentId: r.parentId, studentId: r.studentId, relationship: r.relationship, isPrimary: r.isPrimary ? 'yes' : 'no' }
+          : { parentId: '', studentId: '', relationship: 'MOTHER', isPrimary: 'no' }
+      }
+      onSave={async (form, editing) => {
+        if (!editing && rows.some((r) => r.parentId === form.parentId && r.studentId === form.studentId)) return 'This parent is already linked to this child.'
+        if (editing && (editing.parentId !== form.parentId || editing.studentId !== form.studentId)) await api.students.unlinkParent(editing.studentId, editing.parentId)
+        await api.students.linkParent(form.studentId, form.parentId, form.relationship, form.isPrimary === 'yes')
+        students.reload()
       }}
       viewRows={(r) => [
-        ['Parent', r.parent?.name],
+        ['Parent', r.parent?.fullName],
         ['Parent Phone', r.parent?.phone],
-        ['Child', r.student?.name],
-        ['Class', r.className],
-        ['Relationship', r.relationship],
-        ['Status', <StatusBadge status={r.status} />],
+        ['Child', r.student.fullName],
+        ['Class', r.student.class?.name],
+        ['Relationship', label(RELATIONSHIP, r.relationship)],
+        ['Primary contact', r.isPrimary ? 'Yes' : 'No'],
       ]}
       actions={(row) => [
         {
           label: 'Unlink',
           icon: Unlink,
           danger: true,
-          confirm: { title: 'Unlink this parent and child?', body: `${row.parent?.name} will no longer see ${row.student?.name}'s journal, messages or camera.` },
-          onClick: () => {
-            remove('links', row.id)
-            log('Delete', 'Relationships', `Parent relationship removed: ${row.name}`)
+          confirm: { title: 'Unlink this parent and child?', body: `${row.parent?.fullName} will no longer see ${row.student.fullName}'s journal or camera.` },
+          onClick: async () => {
+            await api.students.unlinkParent(row.studentId, row.parentId)
             toast('Relationship removed.')
+            students.reload()
           },
         },
       ]}
@@ -926,24 +1147,21 @@ export function RelationshipsPage() {
 // ---------- Camera Monitoring ----------
 
 function CameraCard({ camera, index, onOpen }) {
-  const { db } = useStore()
-  const cam = useCamera(camera.classId)
-  const cls = byId(db.classes, camera.classId)
   return (
     <section className="card">
       <div className="card-head">
         <div>
-          <h2>{cls?.name}</h2>
+          <h2>{camera.class?.name}</h2>
           <span className="muted small">{camera.name}</span>
         </div>
-        <CameraBadge state={cam.state} />
+        <CameraBadge state={camera.state} />
       </div>
-      <CameraPreview state={cam.state} variant={index} />
+      <CameraPreview state={camera.state} variant={index % 2} />
       <div className="row-between">
         <span className="muted">
-          <CalendarClock size={16} /> <CameraStatusText cam={cam} />
+          <CalendarClock size={16} /> <CameraStatusText cam={camera} /> · {weekdaysText(camera.allowedWeekdays)}
         </span>
-        <button className="btn btn-primary btn-sm" onClick={onOpen}>
+        <button className="btn btn-primary btn-sm" onClick={onOpen} disabled={!camera.isActive}>
           <Video size={16} /> Open Camera
         </button>
       </div>
@@ -952,79 +1170,96 @@ function CameraCard({ camera, index, onOpen }) {
 }
 
 export function CameraMonitoringPage() {
-  const { db } = useStore()
+  const cams = useApi(() => api.cameras.list(), [])
   const [open, setOpen] = useState(null)
-  const cameras = db.cameras.slice(0, 2)
   return (
     <>
       <PageHeader
         title="Camera Monitoring"
-        subtitle="Classroom cameras of the school. Parents can only watch during scheduled times."
+        subtitle="Classroom cameras of the school. Staff can watch at any time; parents only inside the viewing window."
         actions={
           <Link className="btn" to="/principal/camera-schedule">
             <CalendarClock size={18} /> Camera Schedule
           </Link>
         }
       />
-      <div className="cam-grid">
-        {cameras.map((c, i) => (
-          <CameraCard key={c.id} camera={c} index={i} onOpen={() => setOpen({ camera: c, index: i })} />
-        ))}
-      </div>
+      <Loadable q={cams} skeleton={<SkeletonCards count={2} />}>
+        {(list) =>
+          list.length === 0 ? (
+            <div className="card">
+              <EmptyState icon={Video} title="No cameras yet." text="Add a camera stream in Camera Schedule." />
+            </div>
+          ) : (
+            <div className="cam-grid">
+              {list.map((c, i) => (
+                <CameraCard key={c.id} camera={c} index={i} onOpen={() => setOpen(c)} />
+              ))}
+            </div>
+          )
+        }
+      </Loadable>
       <p className="privacy-note">
-        <ShieldCheck size={16} /> Streams are private to the school. This demonstration uses a simulated classroom view.
+        <ShieldCheck size={16} /> Streams are private to the school. The demo uses public sample HLS streams.
       </p>
-      <Modal open={!!open} title={open ? `${byId(db.classes, open.camera.classId)?.name} · ${open.camera.name}` : ''} onClose={() => setOpen(null)} size="lg">
-        {open && <CameraPlayer classId={open.camera.classId} variant={open.index} />}
+      <Modal open={!!open} title={open ? `${open.class?.name} · ${open.name}` : ''} onClose={() => setOpen(null)} size="lg">
+        {open && <CameraPlayer src={open.streamUrl} label={open.class?.name} />}
       </Modal>
     </>
   )
 }
 
-// ---------- Camera Schedule ----------
+// ---------- Camera Schedule (camera_streams: one viewing window per camera) ----------
+
+const DAY_PRESETS = [
+  { value: '62', label: 'Monday – Friday' },
+  { value: '126', label: 'Monday – Saturday' },
+  { value: '254', label: 'Every day' },
+]
+const hhmm = (t) => (t || '').slice(0, 5)
 
 export function CameraSchedulePage() {
-  const { db, upsert, remove, log, notify } = useStore()
   const toast = useToast()
-  const now = useNow()
-  const className = (id) => byId(db.classes, id)?.name
-  const rows = [...db.schedules].sort((a, b) => b.date.localeCompare(a.date) || a.start.localeCompare(b.start))
-  const label = (s) => `${className(s.classId)} · ${fmtDate(s.date)} ${s.start}–${s.end}`
+  const cams = useApi(() => api.cameras.list(), [])
+  const classes = useClasses()
+  const camStatus = (c) => (!c.isActive ? 'Disabled' : { LIVE: 'Live Now', SCHEDULED: 'Scheduled', UNAVAILABLE: 'Unavailable' }[c.state])
 
   return (
     <CrudPage
       title="Camera Schedule"
-      subtitle="Parents can watch the classroom camera only inside these time windows"
-      noun="Schedule"
-      addLabel="Add Schedule"
-      rows={rows}
-      searchText={(s) => `${className(s.classId)} ${byId(db.cameras, s.cameraId)?.name} ${s.date}`}
+      subtitle="Each classroom camera has a daily viewing window. Parents of that class can watch only inside it."
+      noun="Camera"
+      addLabel="Add Camera"
+      rows={cams.data || []}
+      loading={cams.loading}
+      error={cams.error}
+      onRetry={cams.reload}
+      searchText={(c) => `${c.class?.name} ${c.name}`}
       searchPlaceholder="Search class or camera"
       filters={[
-        { key: 'class', label: 'classes', options: db.classes.map((c) => ({ value: c.id, label: c.name })), get: (s) => s.classId },
-        { key: 'status', label: 'statuses', options: ['Live Now', 'Scheduled', 'Ended', 'Disabled'], get: (s) => scheduleStatus(s, now) },
+        { key: 'class', label: 'classes', options: (classes.data || []).map((c) => ({ value: c.id, label: c.name })), get: (c) => c.classId },
+        { key: 'status', label: 'statuses', options: ['Live Now', 'Scheduled', 'Unavailable', 'Disabled'], get: camStatus },
       ]}
       columns={[
-        { key: 'class', label: 'Class', render: (s) => className(s.classId) },
-        { key: 'camera', label: 'Camera', render: (s) => byId(db.cameras, s.cameraId)?.name },
-        { key: 'date', label: 'Date', sort: (s) => s.date, render: (s) => fmtDate(s.date) },
-        { key: 'start', label: 'Start Time' },
-        { key: 'end', label: 'End Time' },
-        { key: 'status', label: 'Status', render: (s) => <StatusBadge status={scheduleStatus(s, now)} /> },
+        { key: 'class', label: 'Class', sort: (c) => c.class?.name || '', render: (c) => c.class?.name },
+        { key: 'name', label: 'Camera' },
+        { key: 'days', label: 'Days', render: (c) => weekdaysText(c.allowedWeekdays) },
+        { key: 'window', label: 'Viewing Time', render: (c) => `${hhmm(c.allowedStartTime)}–${hhmm(c.allowedEndTime)}` },
+        { key: 'next', label: 'Next / Current', render: (c) => (c.window ? `${dayLabel(c.window.date)} ${c.window.start}` : '—') },
+        { key: 'status', label: 'Status', render: (c) => <StatusBadge status={camStatus(c)} /> },
       ]}
-      fields={(form) => [
-        { name: 'classId', label: 'Class', type: 'select', required: true, options: db.classes.map((c) => ({ value: c.id, label: c.name })) },
+      fields={[
+        { name: 'classId', label: 'Class', type: 'select', required: true, options: (classes.data || []).map((c) => ({ value: c.id, label: c.name })) },
+        { name: 'name', label: 'Camera Name', required: true, placeholder: 'e.g. Camera 01 – Phòng học' },
         {
-          name: 'cameraId',
-          label: 'Camera',
-          type: 'select',
+          name: 'streamUrl',
+          label: 'Stream URL (HLS .m3u8 or MP4)',
           required: true,
-          options: db.cameras.filter((c) => !form.classId || c.classId === form.classId).map((c) => ({ value: c.id, label: `${c.name} — ${className(c.classId)}` })),
-          validate: (v, f) => (byId(db.cameras, v)?.classId !== f.classId ? 'This camera belongs to another class.' : ''),
+          full: true,
+          validate: (v) => (!/^https?:\/\/\S+$/.test(v || '') ? 'Enter a full http(s) URL.' : ''),
         },
-        { name: 'date', label: 'Date', type: 'date', required: true },
+        { name: 'allowedWeekdays', label: 'Days', type: 'select', required: true, options: DAY_PRESETS, placeholder: undefined },
         {
-          name: 'enabled',
+          name: 'isActive',
           label: 'Status',
           type: 'select',
           required: true,
@@ -1034,150 +1269,115 @@ export function CameraSchedulePage() {
             { value: 'no', label: 'Disabled' },
           ],
         },
-        { name: 'start', label: 'Start Time', type: 'time', required: true },
-        { name: 'end', label: 'End Time', type: 'time', required: true, validate: (v, f) => (f.start && v <= f.start ? 'End time must be after the start time.' : '') },
+        { name: 'allowedStartTime', label: 'Opens at', type: 'time', required: true },
+        {
+          name: 'allowedEndTime',
+          label: 'Closes at',
+          type: 'time',
+          required: true,
+          validate: (v, f) => (f.allowedStartTime && v <= f.allowedStartTime ? 'Closing time must be after the opening time.' : ''),
+        },
       ]}
-      initial={(s) => (s ? { ...s, enabled: s.enabled ? 'yes' : 'no' } : { classId: '', cameraId: '', date: todayISO(), start: '08:00', end: '09:30', enabled: 'yes' })}
-      onSave={(form, editing) => {
-        const item = { ...form, id: editing?.id || uid('sch'), enabled: form.enabled === 'yes' }
-        const clash = db.schedules.some((s) => s.id !== item.id && s.cameraId === item.cameraId && s.date === item.date && s.enabled && item.enabled && s.start < item.end && item.start < s.end)
-        if (clash) return 'This camera already has a viewing time that overlaps with this one.'
-        upsert('schedules', item)
-        if (item.enabled) notify({ role: 'parent', classId: item.classId, type: 'camera', title: 'Camera schedule updated', body: `${className(item.classId)} camera: ${fmtDate(item.date)}, ${item.start}–${item.end}.` })
-        log(editing ? 'Update' : 'Create', 'Camera Schedule', `Camera schedule ${editing ? 'updated' : 'created'}: ${label(item)}`)
+      initial={(c) =>
+        c
+          ? {
+              classId: c.classId,
+              name: c.name,
+              streamUrl: c.streamUrl,
+              allowedWeekdays: DAY_PRESETS.some((d) => Number(d.value) === c.allowedWeekdays) ? String(c.allowedWeekdays) : '62',
+              isActive: c.isActive ? 'yes' : 'no',
+              allowedStartTime: hhmm(c.allowedStartTime),
+              allowedEndTime: hhmm(c.allowedEndTime),
+            }
+          : {
+              classId: '',
+              name: '',
+              streamUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+              allowedWeekdays: '62',
+              isActive: 'yes',
+              allowedStartTime: '08:00',
+              allowedEndTime: '09:30',
+            }
+      }
+      onSave={async (form, editing) => {
+        const body = { ...form, name: form.name.trim(), streamUrl: form.streamUrl.trim(), allowedWeekdays: Number(form.allowedWeekdays), isActive: form.isActive === 'yes' }
+        if (editing) await api.cameras.update(editing.id, body)
+        else await api.cameras.create(body)
+        cams.reload()
       }}
       actions={(row) => [
         {
-          label: row.enabled ? 'Disable' : 'Enable',
+          label: row.isActive ? 'Disable' : 'Enable',
           icon: Power,
-          onClick: () => {
-            upsert('schedules', { id: row.id, enabled: !row.enabled })
-            log('Update', 'Camera Schedule', `Camera schedule ${row.enabled ? 'disabled' : 'enabled'}: ${label(row)}`)
-            toast(`Schedule ${row.enabled ? 'disabled' : 'enabled'}.`)
+          onClick: async () => {
+            await api.cameras.update(row.id, { isActive: !row.isActive })
+            toast(`${row.name} ${row.isActive ? 'disabled' : 'enabled'}.`)
+            cams.reload()
           },
         },
         {
           label: 'Delete',
           icon: Trash2,
           danger: true,
-          confirm: { title: 'Delete this schedule?', body: `Parents will no longer be able to watch ${className(row.classId)} during ${row.start}–${row.end}.` },
-          onClick: () => {
-            remove('schedules', row.id)
-            log('Delete', 'Camera Schedule', `Camera schedule deleted: ${label(row)}`)
-            toast('Schedule deleted.')
+          confirm: { title: `Delete ${row.name}?`, body: `Parents of ${row.class?.name} will no longer be able to watch this camera.` },
+          onClick: async () => {
+            await api.cameras.remove(row.id)
+            toast('Camera deleted.')
+            cams.reload()
           },
         },
       ]}
-      empty={{ icon: CalendarClock, title: 'No camera schedules yet.', text: 'Parents cannot watch the camera until a viewing time is added.' }}
+      empty={{ icon: CalendarClock, title: 'No cameras yet.', text: 'Parents cannot watch the classroom until a camera and its viewing time are added.' }}
     />
   )
 }
 
-// ---------- Reports ----------
+// ---------- Reports (built and exported by the backend) ----------
 
 const REPORTS = [
-  { key: 'attendance', label: 'Attendance', dated: true },
-  { key: 'journal', label: 'Journal Completion', dated: true },
-  { key: 'activity', label: 'Class Activity', dated: true },
-  { key: 'students', label: 'Students' },
-  { key: 'parents', label: 'Parents' },
+  { key: 'attendance', label: 'Attendance' },
+  { key: 'journals', label: 'Journal Submission' },
+  { key: 'nutrition', label: 'Nutrition & Sleep' },
+  { key: 'health', label: 'Health Alerts' },
 ]
 
-function buildReport(db, type, { from, to, classId }) {
-  const classes = db.classes.filter((c) => !classId || c.id === classId)
-  const ids = classes.map((c) => c.id)
-  const cname = (id) => byId(db.classes, id)?.name || '—'
-  const inRange = (d) => d >= from && d <= to
-  const byDate = (a, b) => b.date.localeCompare(a.date) || cname(a.classId).localeCompare(cname(b.classId))
-
-  if (type === 'attendance')
-    return {
-      head: ['Date', 'Class', 'Present', 'Absent', 'Not recorded', 'Attendance rate'],
-      rows: db.attendance
-        .filter((a) => inRange(a.date) && ids.includes(a.classId))
-        .sort(byDate)
-        .map((a) => {
-          const c = attendanceCounts(db, a.classId, a.date)
-          return [fmtDate(a.date), cname(a.classId), c.present, c.absent, c.unrecorded, c.total ? `${Math.round((c.present / c.total) * 100)}%` : '—']
-        }),
-    }
-
-  if (type === 'journal')
-    return {
-      head: ['Date', 'Class', 'Status', 'Created with', 'Photos', 'Last edited'],
-      rows: db.journals
-        .filter((j) => inRange(j.date) && ids.includes(j.classId))
-        .sort(byDate)
-        .map((j) => [fmtDate(j.date), cname(j.classId), JOURNAL_STATUS[j.status], j.source === 'voice' ? 'Voice (AI-assisted)' : 'Manual entry', j.photos.length, fmtDateTime(j.updatedAt)]),
-    }
-
-  if (type === 'activity')
-    return {
-      head: ['Class', 'Head Teacher', 'Students', 'Days with attendance', 'Journals published', 'Photos shared', 'Messages'],
-      rows: classes.map((c) => {
-        const journals = db.journals.filter((j) => j.classId === c.id && j.status === 'published' && inRange(j.date))
-        return [
-          c.name,
-          byId(db.teachers, c.teacherId)?.name || 'Not assigned',
-          studentsOfClass(db, c.id).length,
-          db.attendance.filter((a) => a.classId === c.id && inRange(a.date)).length,
-          journals.length,
-          journals.reduce((s, j) => s + j.photos.length, 0),
-          db.messages.filter((m) => m.teacherId === c.teacherId && inRange(toISO(new Date(m.at)))).length,
-        ]
-      }),
-    }
-
-  if (type === 'students')
-    return {
-      head: ['Full Name', 'Date of Birth', 'Gender', 'Class', 'Parent', 'Status'],
-      rows: db.students
-        .filter((s) => ids.includes(s.classId))
-        .map((s) => [
-          s.name,
-          fmtDate(s.dob),
-          s.gender,
-          cname(s.classId),
-          linksOfStudent(db, s.id)
-            .map((l) => byId(db.parents, l.parentId)?.name)
-            .filter(Boolean)
-            .join(', '),
-          s.status,
-        ]),
-    }
-
-  return {
-    head: ['Parent', 'Phone', 'Child', 'Class', 'Relationship', 'Status'],
-    rows: db.links
-      .map((l) => ({ l, p: byId(db.parents, l.parentId), s: byId(db.students, l.studentId) }))
-      .filter((x) => x.p && x.s && ids.includes(x.s.classId))
-      .map(({ l, p, s }) => [p.name, p.phone, s.name, cname(s.classId), l.relationship, p.status]),
-  }
-}
-
 export function ReportsPage() {
-  const { db } = useStore()
+  const toast = useToast()
   const today = todayISO()
   const [type, setType] = useState('attendance')
   const [from, setFrom] = useState(addDays(today, -6))
   const [to, setTo] = useState(today)
   const [classId, setClassId] = useState('')
+  const [busy, setBusy] = useState('')
+  const classes = useClasses()
+  const q = useApi(() => api.reports.table({ type, from, to, classId: classId || undefined }), [type, from, to, classId])
   const meta = REPORTS.find((r) => r.key === type)
-  const report = buildReport(db, type, { from, to, classId })
-  const statusCol = report.head.indexOf('Status')
+  const report = q.data
+  const cell = (c, v) => (v === null || v === undefined || v === '' ? '—' : c.format === 'percent' ? `${v}%` : c.format === 'date' ? fmtDate(v) : v)
+
+  const download = async (format) => {
+    setBusy(format)
+    try {
+      await api.reports.download({ type, format, from, to, classId: classId || undefined })
+    } catch (e) {
+      toast(errorText(e), 'error')
+    } finally {
+      setBusy('')
+    }
+  }
 
   return (
     <>
       <PageHeader
         title="Reports"
-        subtitle="Attendance, journals and class records"
+        subtitle="Attendance, journals, nutrition and health — generated by the server"
         actions={
           <>
-            <button className="btn" onClick={() => window.print()} disabled={report.rows.length === 0}>
-              <Printer size={18} /> Export PDF
+            <button className="btn" onClick={() => download('pdf')} disabled={!report?.rows.length || !!busy}>
+              <Printer size={18} /> {busy === 'pdf' ? 'Preparing…' : 'Export PDF'}
             </button>
-            <button className="btn btn-primary" onClick={() => downloadCSV(`kinderlog-${type}-${today}.csv`, [report.head, ...report.rows])} disabled={report.rows.length === 0}>
-              <Download size={18} /> Export Excel
+            <button className="btn btn-primary" onClick={() => download('xlsx')} disabled={!report?.rows.length || !!busy}>
+              <Download size={18} /> {busy === 'xlsx' ? 'Preparing…' : 'Export Excel'}
             </button>
           </>
         }
@@ -1190,56 +1390,55 @@ export function ReportsPage() {
         ))}
       </div>
       <div className="toolbar">
-        {meta.dated && (
-          <>
-            <input type="date" className="date-input" value={from} max={to} onChange={(e) => e.target.value && setFrom(e.target.value)} aria-label="From date" />
-            <span className="muted">to</span>
-            <input type="date" className="date-input" value={to} min={from} max={today} onChange={(e) => e.target.value && setTo(e.target.value)} aria-label="To date" />
-          </>
-        )}
-        <Select value={classId} onChange={setClassId} options={db.classes.map((c) => ({ value: c.id, label: c.name }))} placeholder="All classes" aria-label="Class" />
+        <input type="date" className="date-input" value={from} max={to} onChange={(e) => e.target.value && setFrom(e.target.value)} aria-label="From date" />
+        <span className="muted">to</span>
+        <input type="date" className="date-input" value={to} min={from} max={today} onChange={(e) => e.target.value && setTo(e.target.value)} aria-label="To date" />
+        <Select value={classId} onChange={setClassId} options={(classes.data || []).map((c) => ({ value: c.id, label: c.name }))} placeholder="All classes" aria-label="Class" />
       </div>
 
-      {report.rows.length === 0 ? (
-        <div className="card">
-          <EmptyState title="No records for this selection." text="Try a wider date range or another class." />
-        </div>
-      ) : (
-        <div className="card table-card">
-          <div className="card-head pad">
-            <h2>{meta.label}</h2>
-            <span className="muted small">
-              {meta.dated ? `${fmtDate(from)} – ${fmtDate(to)} · ` : ''}
-              {report.rows.length} {report.rows.length === 1 ? 'row' : 'rows'}
-            </span>
-          </div>
-          <table className="table">
-            <thead>
-              <tr>
-                {report.head.map((h) => (
-                  <th key={h}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {report.rows.map((r, i) => (
-                <tr key={i}>
-                  {r.map((v, j) => (
-                    <td key={j} data-label={report.head[j]} className={j === 0 ? 'td-primary' : ''}>
-                      {j === statusCol ? <StatusBadge status={v} /> : v === '' ? '—' : v}
-                    </td>
+      <Loadable q={q} skeleton={<SkeletonTable />}>
+        {(r) =>
+          r.rows.length === 0 ? (
+            <div className="card">
+              <EmptyState title="No records for this selection." text="Try a wider date range or another class." />
+            </div>
+          ) : (
+            <div className="card table-card">
+              <div className="card-head pad">
+                <h2>{meta.label}</h2>
+                <span className="muted small">
+                  {fmtDate(from)} – {fmtDate(to)} · {r.rows.length} {r.rows.length === 1 ? 'row' : 'rows'}
+                </span>
+              </div>
+              <table className="table">
+                <thead>
+                  <tr>
+                    {r.columns.map((c) => (
+                      <th key={c.key}>{c.header}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {r.rows.map((row, i) => (
+                    <tr key={i}>
+                      {r.columns.map((c, j) => (
+                        <td key={c.key} data-label={c.header} className={j === 0 ? 'td-primary' : ''}>
+                          {c.key === 'healthStatus' ? <StatusBadge status={label(HEALTH, row[c.key])} /> : cell(c, row[c.key])}
+                        </td>
+                      ))}
+                    </tr>
                   ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+      </Loadable>
     </>
   )
 }
 
-// ---------- School Announcements ----------
+// ---------- School Announcements (local demo data: the backend has no announcements module) ----------
 
 const AUDIENCES = ['Teachers', 'Parents', 'Teachers & Parents']
 const CATEGORIES = ['Holiday', 'School Activity', 'Important Notice', 'Reminder']
@@ -1281,7 +1480,12 @@ export function AnnouncementsPage() {
         { name: 'category', label: 'Category', type: 'select', required: true, options: CATEGORIES },
         { name: 'audience', label: 'Audience', type: 'select', required: true, options: AUDIENCES },
         { name: 'publishDate', label: 'Publish Date', type: 'date', required: true },
-        { name: 'expiryDate', label: 'Expiry Date', type: 'date', validate: (v, f) => (v && f.publishDate && v < f.publishDate ? 'Expiry date cannot be before the publish date.' : '') },
+        {
+          name: 'expiryDate',
+          label: 'Expiry Date',
+          type: 'date',
+          validate: (v, f) => (v && f.publishDate && v < f.publishDate ? 'Expiry date cannot be before the publish date.' : ''),
+        },
         { name: 'content', label: 'Content', type: 'textarea', required: true, rows: 5 },
       ]}
       submitOptions={[

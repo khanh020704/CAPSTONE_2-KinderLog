@@ -118,9 +118,7 @@ export default function ChatPage() {
                     {c.last && <span className="chat-time">{relTime(c.last.at)}</span>}
                   </span>
                   <span className="chat-conv-sub">{c.sub}</span>
-                  <span className={`chat-conv-last ${c.unread ? 'unread' : ''}`}>
-                    {c.last ? `${c.last.from === mine ? 'You: ' : ''}${c.last.text}` : 'No messages yet'}
-                  </span>
+                  <span className={`chat-conv-last ${c.unread ? 'unread' : ''}`}>{c.last ? `${c.last.from === mine ? 'You: ' : ''}${c.last.text}` : 'No messages yet'}</span>
                 </span>
                 {c.unread > 0 && <span className="count">{c.unread}</span>}
               </button>

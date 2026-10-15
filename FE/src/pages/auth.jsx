@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
-import { ArrowLeft, CheckCircle2, GraduationCap, MailCheck, ShieldCheck, UserCog, Users } from 'lucide-react'
+import { ArrowLeft, GraduationCap, MailCheck, ShieldCheck, UserCog, Users } from 'lucide-react'
 import { DEMO_PASSWORD, ROLES, useStore } from '../store/store'
-import { isEmail, isPhone } from '../lib/utils'
+import { isPhone } from '../lib/utils'
 import { Field, Logo } from '../components/ui'
 import { FormAlert, PasswordInput } from './shared'
 
@@ -136,12 +136,11 @@ export function LoginPage() {
     setError('')
     if (Object.keys(errs).length) return
     setBusy(true)
-    setTimeout(() => {
-      const res = login(role, phone, password, remember)
+    login(role, phone, password, remember).then((res) => {
       if (res.ok) return navigate(res.home, { replace: true })
       setBusy(false)
       setError(res.error)
-    }, 600)
+    })
   }
 
   return (
@@ -215,119 +214,31 @@ export function LoginPage() {
   )
 }
 
+// The backend has no e-mail service, so a forgotten password is reset by the school (Reset Password in the
+// Teachers / Parents / Principals lists sets it back to the initial password).
 export function ForgotPasswordPage() {
-  const { db, mutate } = useStore()
-  const [step, setStep] = useState('email') // email → sending → sent → reset → done
-  const [email, setEmail] = useState('')
-  const [account, setAccount] = useState(null)
-  const [error, setError] = useState('')
-  const [pw, setPw] = useState({ next: '', confirm: '' })
-  const [errors, setErrors] = useState({})
-  const min = Number(db.settings.passwordMin) || 6
-
-  const send = (e) => {
-    e.preventDefault()
-    setError('')
-    if (!isEmail(email)) return setError('Enter a valid email address.')
-    setStep('sending')
-    setTimeout(() => {
-      const found = Object.values(ROLES)
-        .flatMap((r) => db[r.coll])
-        .find((u) => u.email.toLowerCase() === email.trim().toLowerCase())
-      if (!found) {
-        setStep('email')
-        return setError("We couldn't find an account with this email address.")
-      }
-      setAccount(found)
-      setStep('sent')
-    }, 1100)
-  }
-
-  const reset = (e) => {
-    e.preventDefault()
-    const errs = {}
-    if (pw.next.length < min) errs.next = `Password must be at least ${min} characters.`
-    if (pw.confirm !== pw.next) errs.confirm = 'Passwords do not match.'
-    setErrors(errs)
-    if (Object.keys(errs).length) return
-    mutate((prev) => ({ passwords: { ...prev.passwords, [account.id]: pw.next } }))
-    setStep('done')
-  }
-
   return (
     <AuthLayout>
       <div className="auth-mobile-logo">
         <Logo size={30} />
       </div>
-      {(step === 'email' || step === 'sending') && (
-        <>
-          <Link to="/login" className="back-link">
-            <ArrowLeft size={16} /> Back to Login
-          </Link>
-          <h1>Forgot Password</h1>
-          <p className="muted">Enter the email linked to your account and we will send you reset instructions.</p>
-          <form onSubmit={send} noValidate>
-            {error && <FormAlert>{error}</FormAlert>}
-            <Field label="Email">
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Enter your email address" disabled={step === 'sending'} autoComplete="email" />
-            </Field>
-            <button className="btn btn-primary btn-block btn-lg" disabled={step === 'sending'}>
-              {step === 'sending' ? 'Sending reset instructions...' : 'Send reset instructions'}
-            </button>
-          </form>
-          <p className="auth-foot muted">Demo: try mai.nguyen@kinderstars.edu.vn</p>
-        </>
-      )}
-
-      {step === 'sent' && (
-        <div className="auth-center">
-          <span className="auth-icon">
-            <MailCheck size={30} />
-          </span>
-          <h1>Check your email</h1>
-          <p className="muted">
-            Password reset instructions have been sent to your email.
-            <br />
-            <strong>{email}</strong>
-          </p>
-          <button className="btn btn-primary btn-block btn-lg" onClick={() => setStep('reset')}>
-            Open reset link
-          </button>
-          <p className="auth-foot muted">This is a demonstration: no real email is sent, so the reset link opens here.</p>
-          <Link to="/login" className="back-link center">
-            <ArrowLeft size={16} /> Back to Login
-          </Link>
-        </div>
-      )}
-
-      {step === 'reset' && (
-        <>
-          <h1>Reset password</h1>
-          <p className="muted">Create a new password for {account.name}.</p>
-          <form onSubmit={reset} noValidate>
-            <Field label="New password" error={errors.next} hint={`At least ${min} characters.`}>
-              <PasswordInput value={pw.next} onChange={(v) => setPw((p) => ({ ...p, next: v }))} placeholder="Enter a new password" autoComplete="new-password" />
-            </Field>
-            <Field label="Confirm password" error={errors.confirm}>
-              <PasswordInput value={pw.confirm} onChange={(v) => setPw((p) => ({ ...p, confirm: v }))} placeholder="Re-enter the new password" autoComplete="new-password" />
-            </Field>
-            <button className="btn btn-primary btn-block btn-lg">Reset password</button>
-          </form>
-        </>
-      )}
-
-      {step === 'done' && (
-        <div className="auth-center">
-          <span className="auth-icon success">
-            <CheckCircle2 size={30} />
-          </span>
-          <h1>Password changed</h1>
-          <p className="muted">Your password has been successfully reset.</p>
-          <Link to="/login" className="btn btn-primary btn-block btn-lg">
-            Back to Login
-          </Link>
-        </div>
-      )}
+      <Link to="/login" className="back-link">
+        <ArrowLeft size={16} /> Back to Login
+      </Link>
+      <div className="auth-center">
+        <span className="auth-icon">
+          <MailCheck size={30} />
+        </span>
+        <h1>Forgot your password?</h1>
+        <p className="muted">
+          Your school can reset it for you. Contact the school office (parents and teachers) or the system administrator (principals); they will set it back to the initial password{' '}
+          <strong>{DEMO_PASSWORD}</strong>.
+        </p>
+        <p className="muted">After signing in, change it in My Profile → Change Password.</p>
+        <Link to="/login" className="btn btn-primary btn-block btn-lg">
+          Back to Login
+        </Link>
+      </div>
     </AuthLayout>
   )
 }

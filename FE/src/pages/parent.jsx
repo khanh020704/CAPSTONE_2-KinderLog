@@ -17,27 +17,37 @@ import {
   Video,
   VideoOff,
 } from 'lucide-react'
-import { attendanceOf, byId, childrenOf, unreadMessages, unreadNotifications, useStore } from '../store/store'
-import { JOURNAL_SECTIONS, dayLabel, fmtDate, fmtLongDate, greeting, toISO, todayISO } from '../lib/utils'
+import { unreadMessages, unreadNotifications, useStore } from '../store/store'
+import { addDays, dayLabel, fmtDate, fmtLongDate, greeting, toISO, todayISO } from '../lib/utils'
+import { api } from '../lib/api'
+import { useApi } from '../lib/useApi'
+import { RELATIONSHIP, label } from '../lib/labels'
 import { useLogout } from '../components/Shell'
-import { CameraBadge, CameraPlayer, CameraPreview, CameraStatusText, useCamera } from '../components/Camera'
-import { JournalTimeline, SECTION_ICON, SECTION_TINT, personalNote } from '../components/Journal'
-import { Avatar, EmptyState, PageHeader, PhotoTile, StatusBadge } from '../components/ui'
+import { CameraBadge, CameraPlayer, CameraPreview, CameraStatusText, useNow } from '../components/Camera'
+import { DayTimeline, SECTION_ICON, SECTION_TINT } from '../components/Journal'
+import { Avatar, EmptyState, Loadable, PageHeader, PhotoTile, Skeleton, StatusBadge } from '../components/ui'
 
 const CHILD_KEY = 'kinderlog.child'
 
-// A parent only ever sees their own linked children; the chosen one is remembered for the session.
+// A parent only ever sees their own linked children (from the backend profile); the chosen one is remembered.
 function useChild() {
-  const { db, user } = useStore()
-  const kids = childrenOf(db, user.id)
+  const { user } = useStore()
+  const kids = (user.api.children || []).map((c) => ({
+    id: c.id,
+    name: c.fullName,
+    photo: c.avatarUrl,
+    classId: c.classId,
+    className: c.class?.name,
+    allergies: c.allergies,
+    relationship: label(RELATIONSHIP, c.relationship),
+  }))
   const [id, setId] = useState(() => sessionStorage.getItem(CHILD_KEY))
   const child = kids.find((k) => k.id === id) || kids[0]
-  const cls = child && byId(db.classes, child.classId)
   const pick = (v) => {
     sessionStorage.setItem(CHILD_KEY, v)
     setId(v)
   }
-  return { kids, child, cls, teacher: cls && byId(db.teachers, cls.teacherId), pick }
+  return { kids, child, pick }
 }
 
 function ChildSwitcher({ kids, child, pick }) {
@@ -61,10 +71,6 @@ function NoChild() {
   )
 }
 
-const publishedJournals = (db, classId) => db.journals.filter((j) => j.classId === classId && j.status === 'published').sort((a, b) => b.date.localeCompare(a.date))
-const childRecord = (db, child, date) => attendanceOf(db, child.classId, date)?.records[child.id]
-const ATTENDANCE_TEXT = { present: 'Present today', absent: 'Absent today' }
-
 const visibleAnnouncements = (db) => {
   const today = todayISO()
   return db.announcements
@@ -72,10 +78,22 @@ const visibleAnnouncements = (db) => {
     .sort((a, b) => b.publishDate.localeCompare(a.publishDate) || b.createdAt - a.createdAt)
 }
 
+const attendanceText = (day) => {
+  if (!day) return 'Not recorded yet'
+  if (day.journal.attendance === 'ABSENT') return `Absent${day.journal.absenceReason ? ` — ${day.journal.absenceReason}` : ''}`
+  return 'Present'
+}
+
+// Camera cards poll the backend once a minute so "Scheduled" turns into "Live" on time.
+function useWatch(childId) {
+  const tick = useNow(60000).getMinutes()
+  return useApi(() => (childId ? api.cameras.watch({ studentId: childId }) : Promise.resolve(null)), [childId, tick])
+}
+
 // ---------- Home ----------
 
-function HomeCamera({ cls, allowed }) {
-  const cam = useCamera(cls.id)
+function HomeCamera({ child, allowed }) {
+  const q = useWatch(child.id)
   if (!allowed)
     return (
       <section className="card">
@@ -90,18 +108,21 @@ function HomeCamera({ cls, allowed }) {
         </div>
       </section>
     )
+  const cam = q.data?.cameras.find((c) => c.state === 'LIVE') || q.data?.cameras[0]
   return (
     <section className="card">
       <div className="row-between">
         <div className="summary-item">
-          <span className={`summary-icon ${cam.state === 'live' ? 'tint-mint' : 'tint-cream'}`}>{cam.state === 'unavailable' ? <VideoOff size={18} /> : <Video size={18} />}</span>
+          <span className={`summary-icon ${cam?.state === 'LIVE' ? 'tint-mint' : 'tint-cream'}`}>
+            {!cam || cam.state === 'UNAVAILABLE' ? <VideoOff size={18} /> : <Video size={18} />}
+          </span>
           <div>
-            <strong>{cls.name}</strong>
-            <span className="muted block">{cam.state === 'unavailable' ? 'The classroom camera is currently unavailable.' : <CameraStatusText cam={cam} />}</span>
+            <strong>{child.className}</strong>
+            <span className="muted block">{q.initial ? 'Checking the camera…' : !cam ? 'This class has no camera.' : <CameraStatusText cam={cam} />}</span>
           </div>
         </div>
-        <Link className={`btn ${cam.state === 'live' ? 'btn-primary' : ''}`} to="/parent/camera">
-          {cam.state === 'live' ? 'Watch' : 'View Schedule'}
+        <Link className={`btn ${cam?.state === 'LIVE' ? 'btn-primary' : ''}`} to="/parent/camera">
+          {cam?.state === 'LIVE' ? 'Watch' : 'View Schedule'}
         </Link>
       </div>
     </section>
@@ -110,8 +131,10 @@ function HomeCamera({ cls, allowed }) {
 
 export function ParentHome() {
   const { db, user } = useStore()
-  const { kids, child, cls, teacher, pick } = useChild()
+  const { kids, child, pick } = useChild()
   const today = todayISO()
+  const journals = useApi(() => (child ? api.journals.timeline(child.id, addDays(today, -14), today) : Promise.resolve(null)), [child?.id])
+  const detail = useApi(() => (child ? api.students.get(child.id) : Promise.resolve(null)), [child?.id])
 
   if (!child)
     return (
@@ -121,16 +144,16 @@ export function ParentHome() {
       </>
     )
 
-  const record = childRecord(db, child, today)
-  const journals = publishedJournals(db, child.classId)
-  const todayJournal = journals.find((j) => j.date === today)
-  const latest = journals[0]
+  const days = journals.data?.days || []
+  const todayDay = days.find((d) => d.date === today)
+  const latest = days[0]
+  const teacher = detail.data?.class?.homeroomTeacher?.fullName
   const announcement = visibleAnnouncements(db)[0]
   const messages = unreadMessages(db, user)
   const notifications = unreadNotifications(db, user)
-  const summary = todayJournal ? JOURNAL_SECTIONS.filter((s) => s.key !== 'note' && todayJournal.sections[s.key]?.trim()) : []
-  const ownNote = personalNote(todayJournal, child.id)
-  const latestText = latest && (personalNote(latest, child.id) || latest.sections.note || latest.sections.learning || latest.sections.meal || latest.sections.emotion)
+  const summary = todayDay ? todayDay.events.filter((e) => e.key !== 'attendance') : []
+  const SUMMARY_KEY = { learning: 'learning', meal: 'meal', sleep: 'sleep', health: 'health', emotion: 'emotion', note: 'note' }
+  const SUMMARY_TITLE = { learning: 'Learning', meal: 'Meal', sleep: 'Sleep', health: 'Health', emotion: 'Emotion', note: `About ${child.name}` }
 
   return (
     <>
@@ -141,9 +164,9 @@ export function ParentHome() {
         <Avatar name={child.name} src={child.photo} size={72} />
         <div>
           <h2>{child.name}</h2>
-          <span>{cls?.name}</span>
-          <span className="muted">Teacher: {teacher?.name || 'Not assigned'}</span>
-          <StatusBadge status={record ? ATTENDANCE_TEXT[record.status] || 'Not recorded' : 'Not recorded'} />
+          <span>{child.className}</span>
+          <span className="muted">Teacher: {detail.initial ? '…' : teacher || 'Not assigned'}</span>
+          <StatusBadge status={todayDay ? (todayDay.journal.attendance === 'ABSENT' ? 'Absent today' : 'Present today') : 'Not recorded'} />
         </div>
       </section>
 
@@ -182,52 +205,47 @@ export function ParentHome() {
       </div>
 
       <h2 className="section-title">Today's summary</h2>
-      <section className="card">
-        <div className="summary-list">
-          <div className="summary-item">
-            <span className="summary-icon tint-mint">
-              <ClipboardCheck size={18} />
-            </span>
-            <div>
-              <strong>Attendance</strong>
-              <span className="block">
-                {record?.status === 'present' ? 'Present' : record?.status === 'absent' ? `Absent${record.note ? ` — ${record.note}` : ''}` : 'Not recorded yet'}
-              </span>
-            </div>
-          </div>
-          {summary.map((s) => {
-            const Icon = SECTION_ICON[s.key]
-            return (
-              <div key={s.key} className="summary-item">
-                <span className={`summary-icon tint-${SECTION_TINT[s.key]}`}>
-                  <Icon size={18} />
+      <Loadable
+        q={journals}
+        skeleton={
+          <section className="card">
+            <Skeleton h={80} />
+          </section>
+        }
+      >
+        {() => (
+          <section className="card">
+            <div className="summary-list">
+              <div className="summary-item">
+                <span className="summary-icon tint-mint">
+                  <ClipboardCheck size={18} />
                 </span>
                 <div>
-                  <strong>{s.label}</strong>
-                  <span className="block">{todayJournal.sections[s.key]}</span>
+                  <strong>Attendance</strong>
+                  <span className="block">{attendanceText(todayDay)}</span>
                 </div>
               </div>
-            )
-          })}
-        </div>
-        {ownNote && (
-          <div className="summary-item">
-            <span className="summary-icon tint-lav">
-              <UserRound size={18} />
-            </span>
-            <div>
-              <strong>About {child.name}</strong>
-              <span className="block">{ownNote}</span>
-              <span className="chip private-chip">
-                <Lock size={12} /> Only you can see this note
-              </span>
+              {summary.map((ev) => {
+                const Icon = ev.key === 'note' ? UserRound : SECTION_ICON[SUMMARY_KEY[ev.key]]
+                return (
+                  <div key={ev.key} className="summary-item">
+                    <span className={`summary-icon tint-${ev.key === 'note' ? 'lav' : SECTION_TINT[ev.key]}`}>
+                      <Icon size={18} />
+                    </span>
+                    <div>
+                      <strong>{SUMMARY_TITLE[ev.key]}</strong>
+                      <span className="block">{ev.text}</span>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
-          </div>
+            {!todayDay && <EmptyState icon={BookOpen} title="Today's journal has not been shared yet." text="The teacher usually shares it in the afternoon." soft />}
+          </section>
         )}
-        {!todayJournal && <EmptyState icon={BookOpen} title="Today's journal has not been created yet." text="The teacher usually shares it in the afternoon." soft />}
-      </section>
+      </Loadable>
 
-      {latest && (
+      {latest && latest.date !== today && (
         <>
           <h2 className="section-title">Latest journal</h2>
           <section className="card">
@@ -235,11 +253,11 @@ export function ParentHome() {
               <strong>{dayLabel(latest.date)}</strong>
               <span className="muted small">{fmtLongDate(latest.date)}</span>
             </div>
-            <p>{latestText}</p>
+            <p>{latest.events.find((e) => e.key === 'note' || e.key === 'learning')?.text || latest.events[0]?.text}</p>
             {latest.photos.length > 0 && (
               <div className="photos">
-                {latest.photos.slice(0, 2).map((p, i) => (
-                  <PhotoTile key={i} src={p} />
+                {latest.photos.slice(0, 2).map((p) => (
+                  <PhotoTile key={p.id} src={p.url} />
                 ))}
               </div>
             )}
@@ -274,12 +292,8 @@ export function ParentHome() {
         </>
       )}
 
-      {cls && (
-        <>
-          <h2 className="section-title">Classroom camera</h2>
-          <HomeCamera cls={cls} allowed={user.cameraAccess !== false} />
-        </>
-      )}
+      <h2 className="section-title">Classroom camera</h2>
+      <HomeCamera child={child} allowed={user.cameraAccess !== false} />
     </>
   )
 }
@@ -288,13 +302,12 @@ export function ParentHome() {
 
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
-function Calendar({ value, onChange, marked }) {
-  const [month, setMonth] = useState(value.slice(0, 7))
+function Calendar({ value, month, onMonth, onChange, marked }) {
   const first = new Date(`${month}-01T00:00:00`)
   const offset = (first.getDay() + 6) % 7 // weeks start on Monday
   const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate()
   const today = todayISO()
-  const shift = (n) => setMonth(toISO(new Date(first.getFullYear(), first.getMonth() + n, 1)).slice(0, 7))
+  const shift = (n) => onMonth(toISO(new Date(first.getFullYear(), first.getMonth() + n, 1)).slice(0, 7))
 
   return (
     <div>
@@ -337,38 +350,49 @@ function Calendar({ value, onChange, marked }) {
   )
 }
 
+const monthEnd = (month) => {
+  const d = new Date(`${month}-01T00:00:00`)
+  return toISO(new Date(d.getFullYear(), d.getMonth() + 1, 0))
+}
+
 export function ParentJournalPage() {
-  const { db } = useStore()
-  const { kids, child, cls, pick } = useChild()
+  const { child, kids, pick } = useChild()
   const [params, setParams] = useSearchParams()
   const today = todayISO()
+  const date = params.get('date') || today
+  const [month, setMonth] = useState(date.slice(0, 7))
+  const end = monthEnd(month) < today ? monthEnd(month) : today
+  const q = useApi(() => (child ? api.journals.timeline(child.id, `${month}-01`, end) : Promise.resolve(null)), [child?.id, month])
+  const dayQ = useApi(() => (child && date.slice(0, 7) !== month ? api.journals.timeline(child.id, date, date) : Promise.resolve(null)), [child?.id, date, month])
   if (!child) return <NoChild />
 
-  const journals = publishedJournals(db, child.classId)
-  const date = params.get('date') || today
-  const journal = journals.find((j) => j.date === date)
+  const days = q.data?.days || []
+  const day = days.find((d) => d.date === date) || dayQ.data?.days.find((d) => d.date === date)
   const select = (d) => setParams(d === today ? {} : { date: d }, { replace: true })
 
   return (
     <>
-      <PageHeader title="Daily Journal" subtitle={`${child.name} · ${cls?.name}`} />
+      <PageHeader title="Daily Journal" subtitle={`${child.name} · ${child.className}`} />
       <ChildSwitcher kids={kids} child={child} pick={pick} />
       <div className="split">
         <div className="stack">
           <section className="card">
-            <Calendar key={date.slice(0, 7)} value={date} onChange={select} marked={journals.map((j) => j.date)} />
+            <Calendar value={date} month={month} onMonth={setMonth} onChange={select} marked={days.map((d) => d.date)} />
             <span className="muted small">Days with a dot have a journal.</span>
           </section>
-          {journals.length > 0 && (
+          {days.length > 0 && (
             <section className="card list-card">
-              {journals.slice(0, 6).map((j) => (
-                <button key={j.id} className="menu-row" onClick={() => select(j.date)}>
+              {days.slice(0, 6).map((d) => (
+                <button key={d.date} className="menu-row" onClick={() => select(d.date)}>
                   <span className="summary-icon tint-peach">
                     <BookOpen size={18} />
                   </span>
                   <span>
-                    <strong>{dayLabel(j.date)}</strong>
-                    <span className="muted block small">{fmtLongDate(j.date)}</span>
+                    <strong>{dayLabel(d.date)}</strong>
+                    <span className="muted block small">
+                      {fmtLongDate(d.date)}
+                      {d.teacher ? ` · ${d.teacher}` : ''}
+                    </span>
                   </span>
                   <ChevronRight size={18} />
                 </button>
@@ -382,16 +406,20 @@ export function ParentJournalPage() {
             <h2>{dayLabel(date)}</h2>
             <span className="muted small">{fmtLongDate(date)}</span>
           </div>
-          {journal ? (
-            <JournalTimeline journal={journal} attendance={childRecord(db, child, date)} child={child} />
-          ) : (
-            <EmptyState
-              icon={BookOpen}
-              title={date === today ? "Today's journal has not been created yet." : 'There is no journal for this day.'}
-              text={date === today ? 'You will get a notification when the teacher shares it.' : 'Choose a day marked with a dot.'}
-              soft
-            />
-          )}
+          <Loadable q={q} skeleton={<Skeleton h={160} />}>
+            {() =>
+              day ? (
+                <DayTimeline day={day} />
+              ) : (
+                <EmptyState
+                  icon={BookOpen}
+                  title={date === today ? "Today's journal has not been shared yet." : 'There is no journal for this day.'}
+                  text={date === today ? 'It appears here as soon as the teacher approves it.' : 'Choose a day marked with a dot.'}
+                  soft
+                />
+              )
+            }
+          </Loadable>
         </section>
       </div>
     </>
@@ -401,22 +429,19 @@ export function ParentJournalPage() {
 // ---------- Camera ----------
 
 export function ParentCameraPage() {
-  const { db, user } = useStore()
-  const { kids, child, cls, pick } = useChild()
-  const cam = useCamera(cls?.id)
-  const today = todayISO()
-  if (!child || !cls) return <NoChild />
+  const { user } = useStore()
+  const { kids, child, pick } = useChild()
+  const q = useWatch(child?.id)
+  if (!child) return <NoChild />
 
   const allowed = user.cameraAccess !== false
-  const variant = Math.max(0, db.cameras.findIndex((c) => c.classId === cls.id))
-  const upcoming = db.schedules
-    .filter((s) => s.classId === cls.id && s.enabled && s.date >= today)
-    .sort((a, b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start))
-    .slice(0, 6)
+  const cams = q.data?.cameras || []
+  const live = cams.find((c) => c.state === 'LIVE' && c.streamUrl)
+  const first = live || cams[0]
 
   return (
     <div className="narrow wide">
-      <PageHeader title="Classroom Camera" subtitle={`${cls.name} · ${child.name}`} actions={allowed && <CameraBadge state={cam.state} />} />
+      <PageHeader title="Classroom Camera" subtitle={`${child.className} · ${child.name}`} actions={allowed && first && <CameraBadge state={first.state} />} />
       <ChildSwitcher kids={kids} child={child} pick={pick} />
 
       {!allowed ? (
@@ -424,68 +449,76 @@ export function ParentCameraPage() {
           <EmptyState icon={Lock} title="Camera access is not available for this account." text="Please contact the school office if you think this is a mistake." soft />
         </div>
       ) : (
-        <>
-          <section className="card">
-            {cam.state === 'live' ? (
-              <CameraPlayer classId={cls.id} variant={variant} />
-            ) : (
-              <>
-                <CameraPreview state={cam.state} variant={variant} />
-                {cam.state === 'scheduled' ? (
-                  <div>
-                    <strong>Scheduled</strong>
-                    <span className="muted block">
-                      The camera opens today at {cam.schedule.start} and closes at {cam.schedule.end}.
+        <Loadable
+          q={q}
+          skeleton={
+            <section className="card">
+              <div className="cam-frame">
+                <span className="skeleton cam-skeleton" />
+              </div>
+            </section>
+          }
+        >
+          {() => (
+            <>
+              <section className="card">
+                {!first ? (
+                  <EmptyState icon={VideoOff} title="This class has no camera." text="Please contact the school office." soft />
+                ) : live ? (
+                  <>
+                    <CameraPlayer key={live.id} src={live.streamUrl} label={`${child.className} · ${live.name}`} />
+                    <span className="muted">
+                      <CameraStatusText cam={live} />
                     </span>
-                  </div>
+                  </>
                 ) : (
-                  <div className="row-between">
-                    <span>
-                      <strong>The classroom camera is currently unavailable.</strong>
-                      <span className="muted block">The school opens the camera only at scheduled times.</span>
-                    </span>
-                    <a className="btn" href="#schedule">
-                      View Schedule
-                    </a>
-                  </div>
+                  <>
+                    <CameraPreview state={first.state} />
+                    <div>
+                      <strong>{first.state === 'SCHEDULED' ? 'Scheduled' : 'The classroom camera is currently unavailable.'}</strong>
+                      <span className="muted block">
+                        <CameraStatusText cam={first} />. The school opens the camera only at set times.
+                      </span>
+                    </div>
+                  </>
                 )}
-              </>
-            )}
-            {cam.state === 'live' && (
-              <span className="muted">
-                <CameraStatusText cam={cam} />
-              </span>
-            )}
-          </section>
+              </section>
 
-          <section className="card" id="schedule">
-            <div className="card-head">
-              <h2>Viewing schedule</h2>
-              <CalendarClock size={18} />
-            </div>
-            {upcoming.length === 0 ? (
-              <EmptyState icon={CalendarClock} title="No viewing times are scheduled." text="The school will notify you when the camera is available." soft />
-            ) : (
-              <ul className="plain-list">
-                {upcoming.map((s) => (
-                  <li key={s.id} className="row-between">
-                    <span>
-                      <strong>{dayLabel(s.date)}</strong>
-                      <span className="muted block small">{fmtLongDate(s.date)}</span>
-                    </span>
-                    <span className="chip">
-                      {s.start}–{s.end}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-          <p className="privacy-note">
-            <ShieldCheck size={16} /> Only parents of {cls.name} can watch, and only during the times set by the school.
-          </p>
-        </>
+              <section className="card" id="schedule">
+                <div className="card-head">
+                  <h2>Viewing times</h2>
+                  <CalendarClock size={18} />
+                </div>
+                {cams.length === 0 ? (
+                  <EmptyState icon={CalendarClock} title="No viewing times are scheduled." text="The school will notify you when the camera is available." soft />
+                ) : (
+                  <ul className="plain-list">
+                    {cams.map((c) => (
+                      <li key={c.id} className="row-between">
+                        <span>
+                          <strong>{c.name}</strong>
+                          <span className="muted block small">{c.window ? `${dayLabel(c.window.date)} · ${fmtLongDate(c.window.date)}` : 'Not scheduled'}</span>
+                        </span>
+                        <span className="cell-user">
+                          {c.window && (
+                            <span className="chip">
+                              {c.window.start}–{c.window.end}
+                            </span>
+                          )}
+                          <CameraBadge state={c.state} />
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </>
+          )}
+        </Loadable>
       )}
+      <p className="privacy-note">
+        <ShieldCheck size={16} /> Only parents of {child.className} can watch, and only during the times set by the school.
+      </p>
     </div>
   )
 }
@@ -494,7 +527,7 @@ export function ParentCameraPage() {
 
 export function ParentMorePage() {
   const { db, user } = useStore()
-  const { child, cls } = useChild()
+  const { child } = useChild()
   const [askLogout, logoutDialog] = useLogout()
   const unread = unreadNotifications(db, user)
   const links = [
@@ -512,7 +545,7 @@ export function ParentMorePage() {
           <Avatar name={user.name} size={60} />
           <div>
             <h2>{user.name}</h2>
-            <span className="muted">{child ? `${child.relationship} of ${child.name}${cls ? ` · ${cls.name}` : ''}` : 'Parent'}</span>
+            <span className="muted">{child ? `${child.relationship} of ${child.name}${child.className ? ` · ${child.className}` : ''}` : 'Parent'}</span>
           </div>
         </div>
       </section>
@@ -539,7 +572,7 @@ export function ParentMorePage() {
   )
 }
 
-// ---------- School announcements ----------
+// ---------- School announcements (local demo data: the backend has no announcements module) ----------
 
 export function ParentAnnouncementsPage() {
   const { db } = useStore()

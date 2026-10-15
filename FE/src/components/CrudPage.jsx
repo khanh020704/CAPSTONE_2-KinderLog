@@ -1,11 +1,13 @@
 import { useMemo, useState } from 'react'
 import { AlertCircle, ArrowDown, ArrowUp, Eye, ImagePlus, Pencil, Plus } from 'lucide-react'
 import { isEmail, isPhone, norm, readFileAsDataURL } from '../lib/utils'
+import { errorText } from '../lib/labels'
 import {
   Avatar,
   Combobox,
   ConfirmDialog,
   EmptyState,
+  ErrorState,
   Field,
   Modal,
   PageHeader,
@@ -41,7 +43,8 @@ export function FormFields({ fields, form, setForm, errors = {} }) {
       {fields.map((f) => {
         const common = { value: form[f.name] ?? '', onChange: (e) => set(f.name, e.target.value), placeholder: f.placeholder }
         let control
-        if (f.type === 'select') control = <Select value={form[f.name] ?? ''} onChange={(v) => set(f.name, v)} options={f.options} placeholder={'placeholder' in f ? f.placeholder : 'Select…'} />
+        if (f.type === 'select')
+          control = <Select value={form[f.name] ?? ''} onChange={(v) => set(f.name, v)} options={f.options} placeholder={'placeholder' in f ? f.placeholder : 'Select…'} />
         else if (f.type === 'combobox') control = <Combobox options={f.options} value={form[f.name] ?? ''} onChange={(v) => set(f.name, v)} placeholder={f.placeholder} />
         else if (f.type === 'textarea') control = <textarea rows={f.rows || 4} {...common} />
         else if (f.type === 'photo')
@@ -50,12 +53,7 @@ export function FormFields({ fields, form, setForm, errors = {} }) {
               <Avatar name={form.name || '?'} src={form[f.name]} size={56} />
               <label className="btn btn-sm">
                 <ImagePlus size={16} /> {form[f.name] ? 'Change photo' : 'Upload photo'}
-                <input
-                  type="file"
-                  accept="image/*"
-                  hidden
-                  onChange={async (e) => e.target.files[0] && set(f.name, await readFileAsDataURL(e.target.files[0]))}
-                />
+                <input type="file" accept="image/*" hidden onChange={async (e) => e.target.files[0] && set(f.name, await readFileAsDataURL(e.target.files[0]))} />
               </label>
             </div>
           )
@@ -91,9 +89,13 @@ export default function CrudPage({
   headerExtra,
   saveLabel,
   submitOptions, // [{ label, primary, patch }]: several submit buttons, each merging its patch into the form
+  loading: loadingProp, // pass the request state when rows come from the backend
+  error: loadError,
+  onRetry,
 }) {
   const toast = useToast()
-  const loading = useFakeLoad()
+  const fakeLoading = useFakeLoad()
+  const loading = loadingProp ?? fakeLoading
   const [q, setQ] = useState('')
   const [filterVals, setFilterVals] = useState({})
   const [sort, setSort] = useState(null)
@@ -140,21 +142,35 @@ export default function CrudPage({
     setFormError('')
     if (Object.keys(errs).length) return
     setSaving(true)
-    setTimeout(() => {
-      setSaving(false)
-      const err = onSave(data, editing)
-      if (err) return setFormError(err)
-      toast(editing ? `${noun} updated successfully.` : `${noun} created successfully.`)
-      setEditing(undefined)
-    }, 500)
+    // onSave may be async (backend call): it returns/resolves an error message, or throws an API error.
+    Promise.resolve()
+      .then(() => onSave(data, editing))
+      .then((err) => {
+        setSaving(false)
+        if (err) return setFormError(err)
+        toast(editing ? `${noun} updated successfully.` : `${noun} created successfully.`)
+        setEditing(undefined)
+      })
+      .catch((e) => {
+        setSaving(false)
+        setFormError(errorText(e))
+      })
   }
 
-  const runAction = (item) => (item.confirm ? setConfirm(item) : item.onClick())
+  const exec = (item) =>
+    Promise.resolve()
+      .then(item.onClick)
+      .catch((e) => toast(errorText(e), 'error'))
+  const runAction = (item) => (item.confirm ? setConfirm(item) : exec(item))
 
   const menuFor = (row) => [
     viewRows && { label: 'View', icon: Eye, onClick: () => setViewing(row) },
     canEdit && fields && { label: 'Edit', icon: Pencil, onClick: () => openForm(row) },
-    ...(actions ? actions(row).filter(Boolean).map((a) => ({ ...a, onClick: () => runAction(a) })) : []),
+    ...(actions
+      ? actions(row)
+          .filter(Boolean)
+          .map((a) => ({ ...a, onClick: () => runAction(a) }))
+      : []),
   ]
 
   return (
@@ -198,7 +214,11 @@ export default function CrudPage({
         ))}
       </div>
 
-      {loading ? (
+      {loadError && !rows.length ? (
+        <div className="card">
+          <ErrorState title={errorText(loadError)} onRetry={onRetry} />
+        </div>
+      ) : loading && !rows.length ? (
         <SkeletonTable />
       ) : filtered.length === 0 ? (
         <div className="card">
@@ -317,7 +337,7 @@ export default function CrudPage({
         danger={confirm?.danger}
         onClose={() => setConfirm(null)}
         onConfirm={() => {
-          confirm.onClick()
+          exec(confirm)
           setConfirm(null)
         }}
       />
