@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AuthUser } from '../../common/decorators';
 import { UserRole } from '../../common/enums';
+import { foldSearch, likeFolded } from '../../common/utils/sql.util';
 import { AccessService } from '../access/access.service';
 import { User } from '../users/entities/user.entity';
 import { CreateStudentDto, LinkParentDto, ListStudentsQueryDto, UpdateStudentDto } from './dto/student.dto';
@@ -36,7 +37,7 @@ export class StudentsService {
     if (visible) qb.andWhere('c.id IN (:...visible)', { visible });
     if (q.classId) qb.andWhere('s.classId = :classId', { classId: q.classId });
     if (q.status) qb.andWhere('s.status = :status', { status: q.status });
-    if (q.search) qb.andWhere('unaccent(s.fullName) ILIKE unaccent(:s)', { s: `%${q.search.trim()}%` });
+    if (q.search) qb.andWhere(likeFolded('s.fullName', 'q'), { q: foldSearch(q.search) });
     if (user.role === UserRole.PARENT) qb.andWhere('l.parentId = :pid', { pid: user.id });
     return qb.getMany();
   }

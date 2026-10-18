@@ -127,9 +127,19 @@ export async function runSeed({ quiet = false } = {}) {
   const passwordHash = await bcrypt.hash(process.env.DEFAULT_PASSWORD ?? '123456', 10);
 
   await dataSource.transaction(async (tx) => {
-    await tx.query(
-      `TRUNCATE journal_photos, daily_journals, camera_streams, parent_student_map, students, classes, users, schools RESTART IDENTITY CASCADE`,
-    );
+    // Children before parents: SQL Server has no TRUNCATE … CASCADE.
+    for (const table of [
+      'journal_photos',
+      'daily_journals',
+      'camera_streams',
+      'parent_student_map',
+      'students',
+      'classes',
+      'users',
+      'schools',
+    ]) {
+      await tx.query(`DELETE FROM ${table}`);
+    }
 
     const user = (u: Partial<User>) =>
       tx.getRepository(User).create({ passwordHash, status: RecordStatus.ACTIVE, ...u });
@@ -350,7 +360,8 @@ export async function runSeed({ quiet = false } = {}) {
         }),
       );
     }
-    const saved = await tx.getRepository(DailyJournal).save(journals, { chunk: 200 });
+    // SQL Server allows 2100 parameters per statement: 50 rows x ~25 columns stays below it.
+    const saved = await tx.getRepository(DailyJournal).save(journals, { chunk: 50 });
 
     // A couple of activity photos on the approved days of Mặt Trời 1.
     const photos = saved
@@ -368,7 +379,7 @@ export async function runSeed({ quiet = false } = {}) {
           uploadedById: t1.id,
         }),
       );
-    await tx.getRepository(JournalPhoto).save(photos, { chunk: 200 });
+    await tx.getRepository(JournalPhoto).save(photos, { chunk: 200 }); // 5 columns per row
 
     if (!quiet)
       console.log(

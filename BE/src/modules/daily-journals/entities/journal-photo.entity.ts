@@ -16,7 +16,7 @@ export class JournalPhoto {
   id: string;
 
   @Index()
-  @Column({ name: 'journal_id', type: 'uuid' })
+  @Column({ name: 'journal_id', type: 'uniqueidentifier' })
   journalId: string;
 
   @ManyToOne('DailyJournal', (j: DailyJournal) => j.photos, { onDelete: 'CASCADE' })
@@ -27,16 +27,16 @@ export class JournalPhoto {
   @Column({ length: 500 })
   url: string;
 
-  @Column({ type: 'varchar', length: 255, nullable: true })
+  @Column({ type: 'nvarchar', length: 255, nullable: true })
   caption: string | null;
 
-  @Column({ name: 'uploaded_by_id', type: 'uuid', nullable: true })
+  @Column({ name: 'uploaded_by_id', type: 'uniqueidentifier', nullable: true })
   uploadedById: string | null;
 
-  @ManyToOne('User', { onDelete: 'SET NULL', nullable: true })
+  @ManyToOne('User', { onDelete: 'NO ACTION', nullable: true })
   @JoinColumn({ name: 'uploaded_by_id' })
   uploadedBy: User | null;
 
-  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  @CreateDateColumn({ name: 'created_at', type: 'datetime2' })
   createdAt: Date;
 }

@@ -21,11 +21,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
       message =
         typeof body === 'string' ? body : ((body as { message?: string | string[] }).message ?? message);
     } else if (exception instanceof QueryFailedError) {
-      const code = (exception as QueryFailedError & { driverError?: { code?: string } }).driverError?.code;
-      if (code === '23505') {
+      // SQL Server error numbers: 2627 / 2601 = duplicate key, 547 = foreign key (or CHECK) conflict
+      const code = (exception as QueryFailedError & { driverError?: { number?: number } }).driverError
+        ?.number;
+      if (code === 2627 || code === 2601) {
         status = HttpStatus.CONFLICT;
         message = 'A record with the same unique value already exists';
-      } else if (code === '23503') {
+      } else if (code === 547) {
         status = HttpStatus.CONFLICT;
         message = 'This record is referenced by other data and cannot be changed this way';
       } else {

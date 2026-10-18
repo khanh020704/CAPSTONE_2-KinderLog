@@ -1,6 +1,21 @@
-import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, ValueTransformer } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
 import type { ClassEntity } from '../../classes/entities/class.entity';
+
+/**
+ * TypeORM's SQL Server driver turns an 'HH:mm' string into `new Date()` with only hours/minutes set,
+ * which keeps the current seconds and milliseconds; build the Date here so exactly HH:mm:ss is stored.
+ */
+const exactTime: ValueTransformer = {
+  to: (value?: string | null) => {
+    if (typeof value !== 'string') return value;
+    const [h, m, sec] = value.split(':').map(Number);
+    const date = new Date();
+    date.setHours(h, m, sec || 0, 0);
+    return date;
+  },
+  from: (value: string | null) => value,
+};
 
 /**
  * A classroom feed and the daily window in which parents of that class may watch it.
@@ -9,7 +24,7 @@ import type { ClassEntity } from '../../classes/entities/class.entity';
 @Entity('camera_streams')
 export class CameraStream extends BaseEntity {
   @Index()
-  @Column({ name: 'class_id', type: 'uuid' })
+  @Column({ name: 'class_id', type: 'uniqueidentifier' })
   classId: string;
 
   @ManyToOne('ClassEntity', { onDelete: 'CASCADE' })
@@ -24,10 +39,10 @@ export class CameraStream extends BaseEntity {
   streamUrl: string;
 
   /** 'HH:mm:ss' in APP_TIMEZONE */
-  @Column({ name: 'allowed_start_time', type: 'time' })
+  @Column({ name: 'allowed_start_time', type: 'time', transformer: exactTime })
   allowedStartTime: string;
 
-  @Column({ name: 'allowed_end_time', type: 'time' })
+  @Column({ name: 'allowed_end_time', type: 'time', transformer: exactTime })
   allowedEndTime: string;
 
   @Column({ name: 'allowed_weekdays', type: 'smallint', default: 62 })

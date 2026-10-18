@@ -190,19 +190,6 @@ export const childrenOf = (db, parentId) =>
     .filter((l) => l.parentId === parentId && l.status === 'Active')
     .map((l) => ({ ...byId(db.students, l.studentId), relationship: l.relationship }))
     .filter((s) => s.id)
-export const linksOfStudent = (db, studentId) => db.links.filter((l) => l.studentId === studentId)
-export const attendanceOf = (db, classId, date) => db.attendance.find((a) => a.classId === classId && a.date === date)
-export const journalOf = (db, classId, date) => db.journals.find((j) => j.classId === classId && j.date === date)
-
-export function attendanceCounts(db, classId, date) {
-  const total = studentsOfClass(db, classId).filter((s) => s.status === 'Active').length
-  const rec = attendanceOf(db, classId, date)
-  if (!rec) return { total, present: 0, absent: 0, unrecorded: total, recorded: false }
-  const vals = studentsOfClass(db, classId).map((s) => rec.records[s.id]?.status)
-  const present = vals.filter((v) => v === 'present').length
-  const absent = vals.filter((v) => v === 'absent').length
-  return { total, present, absent, unrecorded: Math.max(0, total - present - absent), recorded: true }
-}
 
 export function notificationsFor(db, user) {
   if (!user) return []

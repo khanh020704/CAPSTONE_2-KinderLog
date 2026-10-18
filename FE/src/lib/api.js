@@ -67,11 +67,11 @@ const toForm = (fields, files = {}) => {
 // ---------------------------------------------------------------- endpoints
 
 export const api = {
-  /** GET /health (outside the /api prefix): { status, db, aiMode } */
+  /** GET /health (outside the /api prefix): { status, db, dbEngine, dbLatencyMs, aiMode }. 503 = API up, database down. */
   health: async () => {
     const res = await fetch(`${BASE.replace(/\/api$/, '')}/health`)
-    if (!res.ok) throw new ApiError(res.status, 'Health check failed')
-    return res.json()
+    if (res.ok || res.status === 503) return res.json()
+    throw new ApiError(res.status, 'Health check failed')
   },
 
   auth: {

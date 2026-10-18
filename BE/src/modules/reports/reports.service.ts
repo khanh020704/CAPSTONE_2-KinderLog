@@ -6,6 +6,7 @@ import { DateRangeQueryDto } from '../../common/dto/date-range.dto';
 import { AuthUser } from '../../common/decorators';
 import { HealthStatus, JournalStatus, MealLevel, RecordStatus, UserRole } from '../../common/enums';
 import { addDays, dateRange, isoDate, weekdayOf } from '../../common/utils/date.util';
+import { avgSql, countWhere, isoDateSql } from '../../common/utils/sql.util';
 import { AccessService } from '../access/access.service';
 import { CacheService } from '../cache/cache.service';
 import { CameraStream } from '../camera-streams/entities/camera-stream.entity';
@@ -70,7 +71,8 @@ export class ReportsService {
       this.healthAlerts(s, 10),
     ]);
     const expectedPerDay = [...roster.values()].reduce((a, b) => a + b, 0);
-    const schoolDays = dateRange(s.from, s.to).filter((d) => weekdayOf(d) <= 5);
+    // Weekdays, plus any weekend day on which journals were actually logged
+    const schoolDays = dateRange(s.from, s.to).filter((d) => weekdayOf(d) <= 5 || perDay.has(d));
 
     const trend = schoolDays.map((date) => {
       const r = perDay.get(date) ?? { present: 0, absent: 0, logged: 0, approved: 0 };
@@ -150,7 +152,7 @@ export class ReportsService {
           .innerJoin('j.class', 'c')
           .select('c.school_id', 'schoolId')
           .addSelect('COUNT(*)', 'entries')
-          .addSelect(`COUNT(*) FILTER (WHERE j.status = '${JournalStatus.APPROVED}')`, 'approved')
+          .addSelect(countWhere(`j.status = '${JournalStatus.APPROVED}'`), 'approved')
           .where('j.journal_date >= :since', { since })
           .groupBy('c.school_id')
           .getRawMany<{ schoolId: string; entries: string; approved: string }>(),
@@ -243,13 +245,13 @@ export class ReportsService {
           .select('s.full_name', 'student')
           .addSelect('j.class_id', 'classId')
           .addSelect('COUNT(j.meal_level)', 'days')
-          .addSelect(
-            Object.values(MealLevel)
-              .map((l) => `COUNT(*) FILTER (WHERE j.meal_level = '${l}') AS "${l}"`)
-              .join(', '),
-          )
-          .addSelect(`AVG(${MEAL_SCORE_SQL})`, 'score')
-          .addSelect('AVG(j.sleep_minutes)', 'sleep')
+          .addSelect(countWhere(`j.meal_level = '${MealLevel.ALL}'`), MealLevel.ALL)
+          .addSelect(countWhere(`j.meal_level = '${MealLevel.MOST}'`), MealLevel.MOST)
+          .addSelect(countWhere(`j.meal_level = '${MealLevel.HALF}'`), MealLevel.HALF)
+          .addSelect(countWhere(`j.meal_level = '${MealLevel.LITTLE}'`), MealLevel.LITTLE)
+          .addSelect(countWhere(`j.meal_level = '${MealLevel.NONE}'`), MealLevel.NONE)
+          .addSelect(avgSql(MEAL_SCORE_SQL), 'score')
+          .addSelect(avgSql('j.sleep_minutes'), 'sleep')
           .where('j.class_id IN (:...ids)', { ids: s.classIds })
           .andWhere('j.journal_date BETWEEN :from AND :to', { from: s.from, to: s.to })
           .groupBy('s.id')
@@ -376,16 +378,16 @@ export class ReportsService {
     const qb = this.journals.createQueryBuilder('j').select([]);
     for (const [alias, expr] of Object.entries(groupCols)) qb.addSelect(expr, alias);
     return qb
-      .addSelect(`COUNT(*) FILTER (WHERE j.attendance = 'PRESENT')`, 'present')
-      .addSelect(`COUNT(*) FILTER (WHERE j.attendance = 'ABSENT')`, 'absent')
+      .addSelect(countWhere(`j.attendance = 'PRESENT'`), 'present')
+      .addSelect(countWhere(`j.attendance = 'ABSENT'`), 'absent')
       .addSelect('COUNT(*)', 'logged')
-      .addSelect(`COUNT(*) FILTER (WHERE j.status = 'APPROVED')`, 'approved')
+      .addSelect(countWhere(`j.status = 'APPROVED'`), 'approved')
       .where('j.class_id IN (:...ids)', { ids: s.classIds })
       .andWhere('j.journal_date BETWEEN :from AND :to', { from: s.from, to: s.to });
   }
 
   private async dailyRows(s: Scope) {
-    const rows = await this.baseAgg(s, { date: "to_char(j.journal_date, 'YYYY-MM-DD')" })
+    const rows = await this.baseAgg(s, { date: isoDateSql('j.journal_date') })
       .groupBy('j.journal_date')
       .getRawMany<Record<string, string>>();
     return new Map(
@@ -398,7 +400,7 @@ export class ReportsService {
 
   private async byClassAndDay(s: Scope) {
     const rows = await this.baseAgg(s, {
-      date: "to_char(j.journal_date, 'YYYY-MM-DD')",
+      date: isoDateSql('j.journal_date'),
       classId: 'j.class_id',
     })
       .groupBy('j.journal_date')
@@ -417,8 +419,8 @@ export class ReportsService {
 
   private async classStats(s: Scope) {
     const rows = await this.baseAgg(s, { classId: 'j.class_id' })
-      .addSelect(`AVG(${MEAL_SCORE_SQL})`, 'mealScore')
-      .addSelect('AVG(j.sleep_minutes)', 'sleep')
+      .addSelect(avgSql(MEAL_SCORE_SQL), 'mealScore')
+      .addSelect(avgSql('j.sleep_minutes'), 'sleep')
       .groupBy('j.class_id')
       .getRawMany<Record<string, string | null>>();
     return new Map(
@@ -475,10 +477,10 @@ export class ReportsService {
     const rows = await this.journals
       .createQueryBuilder('j')
       .select('j.class_id', 'classId')
-      .addSelect(`COUNT(*) FILTER (WHERE j.attendance = 'PRESENT')`, 'present')
-      .addSelect(`COUNT(*) FILTER (WHERE j.attendance = 'ABSENT')`, 'absent')
+      .addSelect(countWhere(`j.attendance = 'PRESENT'`), 'present')
+      .addSelect(countWhere(`j.attendance = 'ABSENT'`), 'absent')
       .addSelect('COUNT(*)', 'logged')
-      .addSelect(`COUNT(*) FILTER (WHERE j.status = 'APPROVED')`, 'approved')
+      .addSelect(countWhere(`j.status = 'APPROVED'`), 'approved')
       .where('j.class_id IN (:...ids)', { ids: s.classIds })
       .andWhere('j.journal_date = :today', { today })
       .groupBy('j.class_id')

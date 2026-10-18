@@ -7,10 +7,10 @@ import type { School } from '../../schools/entities/school.entity';
 export class User extends BaseEntity {
   /** NULL only for SYSTEM_ADMIN, who works across all schools. */
   @Index()
-  @Column({ name: 'school_id', type: 'uuid', nullable: true })
+  @Column({ name: 'school_id', type: 'uniqueidentifier', nullable: true })
   schoolId: string | null;
 
-  @ManyToOne('School', (s: School) => s.users, { onDelete: 'RESTRICT', nullable: true })
+  @ManyToOne('School', (s: School) => s.users, { onDelete: 'NO ACTION', nullable: true })
   @JoinColumn({ name: 'school_id' })
   school: School | null;
 
@@ -22,21 +22,21 @@ export class User extends BaseEntity {
   @Column({ length: 20 })
   phone: string;
 
-  @Column({ type: 'varchar', length: 120, nullable: true })
+  @Column({ type: 'nvarchar', length: 120, nullable: true })
   email: string | null;
 
   @Column({ name: 'password_hash', length: 100, select: false })
   passwordHash: string;
 
-  @Column({ type: 'enum', enum: UserRole })
+  @Column({ type: 'simple-enum', enum: UserRole })
   role: UserRole;
 
-  @Column({ type: 'enum', enum: RecordStatus, default: RecordStatus.ACTIVE })
+  @Column({ type: 'simple-enum', enum: RecordStatus, default: RecordStatus.ACTIVE })
   status: RecordStatus;
 
-  @Column({ type: 'varchar', length: 255, nullable: true })
+  @Column({ type: 'nvarchar', length: 255, nullable: true })
   address: string | null;
 
-  @Column({ name: 'last_login_at', type: 'timestamptz', nullable: true })
+  @Column({ name: 'last_login_at', type: 'datetime2', nullable: true })
   lastLoginAt: Date | null;
 }

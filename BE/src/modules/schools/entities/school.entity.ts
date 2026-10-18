@@ -10,16 +10,16 @@ export class School extends BaseEntity {
   @Column({ length: 150 })
   name: string;
 
-  @Column({ type: 'varchar', length: 255, nullable: true })
+  @Column({ type: 'nvarchar', length: 255, nullable: true })
   address: string | null;
 
-  @Column({ type: 'varchar', length: 20, nullable: true })
+  @Column({ type: 'nvarchar', length: 20, nullable: true })
   phone: string | null;
 
-  @Column({ type: 'varchar', length: 120, nullable: true })
+  @Column({ type: 'nvarchar', length: 120, nullable: true })
   email: string | null;
 
-  @Column({ type: 'enum', enum: RecordStatus, default: RecordStatus.ACTIVE })
+  @Column({ type: 'simple-enum', enum: RecordStatus, default: RecordStatus.ACTIVE })
   status: RecordStatus;
 
   @OneToMany('User', (u: User) => u.school)

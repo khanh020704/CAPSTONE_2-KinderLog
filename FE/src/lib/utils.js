@@ -10,10 +10,6 @@ export const addDays = (iso, n) => {
   return toISO(d)
 }
 export const hm = (d = new Date()) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
-export const hmToMin = (s) => {
-  const [h, m] = s.split(':').map(Number)
-  return h * 60 + m
-}
 export const minToHm = (min) => {
   const m = Math.max(0, Math.min(23 * 60 + 59, min))
   return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`
@@ -87,38 +83,6 @@ export const norm = (s) =>
     .replace(/Đ/g, 'D')
     .toLowerCase()
 
-// Parents may only watch during a schedule window set by the principal.
-export function cameraState(db, classId, now = new Date()) {
-  const today = toISO(now)
-  const cur = now.getHours() * 60 + now.getMinutes()
-  const slots = db.schedules.filter((s) => s.classId === classId && s.date === today && s.enabled).sort((a, b) => hmToMin(a.start) - hmToMin(b.start))
-  const live = slots.find((s) => hmToMin(s.start) <= cur && cur < hmToMin(s.end))
-  if (live) return { state: 'live', schedule: live }
-  const next = slots.find((s) => hmToMin(s.start) > cur)
-  if (next) return { state: 'scheduled', schedule: next }
-  return { state: 'unavailable', schedule: null }
-}
-
-export function scheduleStatus(s, now = new Date()) {
-  if (!s.enabled) return 'Disabled'
-  const today = toISO(now)
-  const cur = now.getHours() * 60 + now.getMinutes()
-  if (s.date < today || (s.date === today && hmToMin(s.end) <= cur)) return 'Ended'
-  if (s.date === today && hmToMin(s.start) <= cur) return 'Live Now'
-  return 'Scheduled'
-}
-
-export function downloadCSV(filename, rows) {
-  const csv = rows.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n')
-  // BOM so Excel reads Vietnamese characters correctly
-  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(a.href)
-}
-
 export const readFileAsDataURL = (file) =>
   new Promise((resolve, reject) => {
     const r = new FileReader()
@@ -126,14 +90,3 @@ export const readFileAsDataURL = (file) =>
     r.onerror = reject
     r.readAsDataURL(file)
   })
-
-export const JOURNAL_SECTIONS = [
-  { key: 'meal', label: 'Meal', time: '11:30', timeline: 'Lunch' },
-  { key: 'learning', label: 'Learning', time: '09:30', timeline: 'Learning Activity' },
-  { key: 'sleep', label: 'Sleep', time: '13:00', timeline: 'Nap' },
-  { key: 'health', label: 'Health', timeline: 'Health' },
-  { key: 'emotion', label: 'Emotion', timeline: 'Emotion' },
-  { key: 'note', label: 'Special Note', timeline: 'Note from the teacher' },
-]
-
-export const JOURNAL_STATUS = { draft: 'Draft', review: 'Needs Review', approved: 'Approved', published: 'Published' }

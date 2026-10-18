@@ -8,10 +8,10 @@ import type { ParentStudentMap } from './parent-student-map.entity';
 @Entity('students')
 export class Student extends BaseEntity {
   @Index()
-  @Column({ name: 'class_id', type: 'uuid' })
+  @Column({ name: 'class_id', type: 'uniqueidentifier' })
   classId: string;
 
-  @ManyToOne('ClassEntity', (c: ClassEntity) => c.students, { onDelete: 'RESTRICT' })
+  @ManyToOne('ClassEntity', (c: ClassEntity) => c.students, { onDelete: 'NO ACTION' })
   @JoinColumn({ name: 'class_id' })
   class: ClassEntity;
 
@@ -21,20 +21,20 @@ export class Student extends BaseEntity {
   @Column({ name: 'date_of_birth', type: 'date' })
   dateOfBirth: string;
 
-  @Column({ type: 'enum', enum: Gender })
+  @Column({ type: 'simple-enum', enum: Gender })
   gender: Gender;
 
   /** Free text the teacher must see at every meal, e.g. "Dị ứng tôm, đậu phộng". */
-  @Column({ type: 'text', nullable: true })
+  @Column({ type: 'nvarchar', length: 'MAX', nullable: true })
   allergies: string | null;
 
-  @Column({ name: 'medical_note', type: 'text', nullable: true })
+  @Column({ name: 'medical_note', type: 'nvarchar', length: 'MAX', nullable: true })
   medicalNote: string | null;
 
-  @Column({ name: 'avatar_url', type: 'varchar', length: 500, nullable: true })
+  @Column({ name: 'avatar_url', type: 'nvarchar', length: 500, nullable: true })
   avatarUrl: string | null;
 
-  @Column({ type: 'enum', enum: RecordStatus, default: RecordStatus.ACTIVE })
+  @Column({ type: 'simple-enum', enum: RecordStatus, default: RecordStatus.ACTIVE })
   status: RecordStatus;
 
   @OneToMany('ParentStudentMap', (m: ParentStudentMap) => m.student)

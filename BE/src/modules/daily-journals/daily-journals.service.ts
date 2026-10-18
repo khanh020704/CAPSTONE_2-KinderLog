@@ -7,6 +7,7 @@ import { Between, DataSource, In, Repository } from 'typeorm';
 import { AuthUser } from '../../common/decorators';
 import { AttendanceStatus, JournalSource, JournalStatus, RecordStatus, UserRole } from '../../common/enums';
 import { addDays, isoDate } from '../../common/utils/date.util';
+import { countWhere, isoDateSql } from '../../common/utils/sql.util';
 import { AccessService } from '../access/access.service';
 import { CacheService } from '../cache/cache.service';
 import { Student } from '../students/entities/student.entity';
@@ -26,8 +27,8 @@ import { buildTimeline } from './timeline';
 
 /**
  * Saves rows one after another on the transaction's connection. A multi-row repo.save() makes TypeORM 0.3 send
- * its SELECTs/UPDATEs in parallel on that single connection, which pg 8 only tolerates with a deprecation warning
- * and pg 9 will reject. A class has ~30 children, so the extra round trips are negligible.
+ * its SELECTs/UPDATEs in parallel, but a SQL Server connection runs one request at a time, so they would only queue
+ * up anyway. A class has ~30 children, so the sequential round trips are negligible.
  */
 async function saveInOrder<T extends object>(repo: Repository<T>, rows: T[]): Promise<T[]> {
   const out: T[] = [];
@@ -113,11 +114,11 @@ export class DailyJournalsService {
     const from = q.from ?? addDays(to, -30);
     const rows = await this.journals
       .createQueryBuilder('j')
-      .select("to_char(j.journal_date, 'YYYY-MM-DD')", 'date')
+      .select(isoDateSql('j.journal_date'), 'date')
       .addSelect('COUNT(*)', 'logged')
-      .addSelect(`COUNT(*) FILTER (WHERE j.status = 'APPROVED')`, 'approved')
-      .addSelect(`COUNT(*) FILTER (WHERE j.attendance = 'ABSENT')`, 'absent')
-      .addSelect(`BOOL_OR(j.source = 'VOICE')`, 'voice')
+      .addSelect(countWhere(`j.status = 'APPROVED'`), 'approved')
+      .addSelect(countWhere(`j.attendance = 'ABSENT'`), 'absent')
+      .addSelect(`MAX(CASE WHEN j.source = 'VOICE' THEN 1 ELSE 0 END)`, 'voice')
       .addSelect('MAX(j.updated_at)', 'updatedAt')
       .where('j.class_id = :classId', { classId })
       .andWhere('j.journal_date BETWEEN :from AND :to', { from, to })
@@ -128,7 +129,7 @@ export class DailyJournalsService {
         logged: string;
         approved: string;
         absent: string;
-        voice: boolean;
+        voice: number;
         updatedAt: Date;
       }>();
     return rows.map((r) => ({
@@ -137,7 +138,7 @@ export class DailyJournalsService {
       approved: Number(r.approved),
       draft: Number(r.logged) - Number(r.approved),
       absent: Number(r.absent),
-      voice: r.voice,
+      voice: Number(r.voice) === 1,
       updatedAt: r.updatedAt,
     }));
   }

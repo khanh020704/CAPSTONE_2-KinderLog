@@ -2,6 +2,8 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import ExcelJS from 'exceljs';
+import { rmSync } from 'fs';
+import { basename, join } from 'path';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
@@ -49,6 +51,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app?.close();
+  // the uploaded test photo is not part of the demo data
+  if (ids.photoUrl) {
+    rmSync(join(process.env.UPLOAD_DIR ?? 'uploads', 'photos', basename(ids.photoUrl)), { force: true });
+  }
 });
 
 // shared ids, filled as the suite goes
@@ -57,7 +63,7 @@ const ids: Record<string, string> = {};
 describe('1. Health & bootstrap', () => {
   it('GET /health reports the database up (public route)', async () => {
     const res = await request(http).get('/health').expect(200);
-    expect(res.body).toMatchObject({ status: 'ok', db: 'up', aiMode: 'mock' });
+    expect(res.body).toMatchObject({ status: 'ok', db: 'up', dbEngine: 'SQL Server', aiMode: 'mock' });
   });
 });
 

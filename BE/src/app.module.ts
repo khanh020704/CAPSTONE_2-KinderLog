@@ -1,8 +1,9 @@
-import { Controller, Get, Module } from '@nestjs/common';
+import { Controller, Get, HttpStatus, Logger, Module, Res } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import type { Response } from 'express';
 import { DataSource } from 'typeorm';
 import { Public } from './common/decorators';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
@@ -20,18 +21,35 @@ import { SchoolsModule } from './modules/schools/schools.module';
 import { StudentsModule } from './modules/students/students.module';
 import { UsersModule } from './modules/users/users.module';
 
+const DB_ENGINE: Record<string, string> = { mssql: 'SQL Server' };
+
 @Controller('health')
 class HealthController {
+  private readonly logger = new Logger('Health');
+
   constructor(
     private readonly db: DataSource,
     private readonly config: ConfigService,
   ) {}
 
+  /** Liveness of the API plus a `SELECT 1` ping to the database; 503 (with `db: 'down'`) when the database is unreachable. */
   @Public()
   @Get()
-  async check() {
-    await this.db.query('SELECT 1');
-    return { status: 'ok', db: 'up', aiMode: this.config.get('ai.mode'), time: new Date().toISOString() };
+  async check(@Res({ passthrough: true }) res: Response) {
+    const base = {
+      dbEngine: DB_ENGINE[this.db.options.type] ?? this.db.options.type,
+      aiMode: this.config.get<string>('ai.mode'),
+      time: new Date().toISOString(),
+    };
+    const started = Date.now();
+    try {
+      await this.db.query('SELECT 1 AS ok');
+      return { status: 'ok', db: 'up', dbLatencyMs: Date.now() - started, ...base };
+    } catch (e) {
+      this.logger.error(`Database ping failed: ${(e as Error).message}`);
+      res.status(HttpStatus.SERVICE_UNAVAILABLE);
+      return { status: 'error', db: 'down', ...base };
+    }
   }
 }
 

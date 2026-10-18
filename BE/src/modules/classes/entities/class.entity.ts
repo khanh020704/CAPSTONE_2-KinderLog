@@ -9,10 +9,10 @@ import type { User } from '../../users/entities/user.entity';
 @Unique('uq_class_name_per_year', ['schoolId', 'academicYear', 'name'])
 export class ClassEntity extends BaseEntity {
   @Index()
-  @Column({ name: 'school_id', type: 'uuid' })
+  @Column({ name: 'school_id', type: 'uniqueidentifier' })
   schoolId: string;
 
-  @ManyToOne('School', (s: School) => s.classes, { onDelete: 'RESTRICT' })
+  @ManyToOne('School', (s: School) => s.classes, { onDelete: 'NO ACTION' })
   @JoinColumn({ name: 'school_id' })
   school: School;
 
@@ -23,18 +23,18 @@ export class ClassEntity extends BaseEntity {
   @Column({ name: 'academic_year', length: 9 })
   academicYear: string;
 
-  @Column({ name: 'age_group', type: 'varchar', length: 40, nullable: true })
+  @Column({ name: 'age_group', type: 'nvarchar', length: 40, nullable: true })
   ageGroup: string | null;
 
   @Index()
-  @Column({ name: 'homeroom_teacher_id', type: 'uuid', nullable: true })
+  @Column({ name: 'homeroom_teacher_id', type: 'uniqueidentifier', nullable: true })
   homeroomTeacherId: string | null;
 
-  @ManyToOne('User', { onDelete: 'SET NULL', nullable: true })
+  @ManyToOne('User', { onDelete: 'NO ACTION', nullable: true })
   @JoinColumn({ name: 'homeroom_teacher_id' })
   homeroomTeacher: User | null;
 
-  @Column({ type: 'enum', enum: RecordStatus, default: RecordStatus.ACTIVE })
+  @Column({ type: 'simple-enum', enum: RecordStatus, default: RecordStatus.ACTIVE })
   status: RecordStatus;
 
   @OneToMany('Student', (s: Student) => s.class)

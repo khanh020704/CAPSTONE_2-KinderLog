@@ -92,7 +92,11 @@ function useHealth() {
 
 const liveServices = (h) => [
   { name: 'API server', status: h?.ok ? 'Operational' : 'Failed', detail: h?.ok ? `Response time ${h.ms} ms` : h?.error || 'Checking…' },
-  { name: 'Database (PostgreSQL)', status: h?.ok && h.db === 'up' ? 'Operational' : 'Failed', detail: h?.ok ? 'Connected' : 'Unreachable' },
+  {
+    name: `Database (${h?.dbEngine || 'SQL Server'})`,
+    status: h?.ok && h.db === 'up' ? 'Operational' : 'Failed',
+    detail: h?.db === 'up' ? `Connected · ping ${h.dbLatencyMs} ms` : h?.ok ? 'Unreachable' : h?.error || 'Checking…',
+  },
 ]
 const aiServices = (h) => [
   { name: 'Speech-to-Text (Whisper)', status: h?.ok ? 'Operational' : 'Failed', detail: h?.aiMode === 'live' ? 'OpenAI Whisper' : 'Demo mode (offline transcript)' },
@@ -169,7 +173,7 @@ export function AdminDashboard() {
             <span>
               <Activity size={16} /> System health
             </span>
-            <StatusBadge status={health.data ? (health.data.ok ? 'Healthy' : 'Failed') : 'Pending'} />
+            <StatusBadge status={health.data ? (health.data.ok && health.data.db === 'up' ? 'Healthy' : 'Failed') : 'Pending'} />
           </div>
           <div className="row-between">
             <span>
@@ -425,7 +429,7 @@ export function MonitoringPage() {
     health.reload()
     setChecked(Date.now())
   }
-  const ok = health.data?.ok
+  const ok = health.data?.ok && health.data.db === 'up'
   return (
     <>
       <PageHeader

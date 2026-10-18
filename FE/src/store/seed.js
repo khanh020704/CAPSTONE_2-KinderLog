@@ -1,4 +1,4 @@
-import { addDays, minToHm, todayISO } from '../lib/utils'
+import { addDays, todayISO } from '../lib/utils'
 
 // [student, date of birth, gender, parent, relationship]
 const CLASS_1 = [
@@ -42,16 +42,10 @@ const STREETS = ['Trần Phú', 'Lê Lợi', 'Nguyễn Trãi', 'Hai Bà Trưng',
 
 const slug = (name) => name.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd').toLowerCase().split(/\s+/).slice(-2).reverse().join('.')
 
-function journal(id, classId, date, status, source, sections, photos, at) {
-  return { id, classId, date, status, source, sections, photos, updatedAt: at, publishedAt: status === 'published' ? at : null }
-}
-
 export function seed() {
   const today = todayISO()
   const now = Date.now()
   const ago = (min) => now - min * 60000
-  const d = new Date()
-  const cur = d.getHours() * 60 + d.getMinutes()
 
   const students = []
   const parents = []
@@ -79,17 +73,10 @@ export function seed() {
   })
 
   const y1 = addDays(today, -1)
-  const y2 = addDays(today, -2)
   const y3 = addDays(today, -3)
 
-  const absentIds = ['st9']
-  const records = (ids, absent = []) =>
-    Object.fromEntries(ids.map((id) => [id, absent.includes(id) ? { status: 'absent', note: 'Gia đình xin nghỉ, bé bị sốt nhẹ' } : { status: 'present', note: '' }]))
-  const c1Ids = students.filter((s) => s.classId === 'c1').map((s) => s.id)
-  const c2Ids = students.filter((s) => s.classId === 'c2').map((s) => s.id)
-
   return {
-    version: 3,
+    version: 4,
     schools: [
       {
         id: 's1',
@@ -149,112 +136,6 @@ export function seed() {
     students,
     parents,
     links,
-    cameras: [
-      { id: 'cam1', name: 'Camera 01', classId: 'c1' },
-      { id: 'cam2', name: 'Camera 02', classId: 'c2' },
-    ],
-    // Windows are seeded around the current time so the demo always shows one live and one upcoming camera.
-    schedules: [
-      { id: 'sch1', classId: 'c1', cameraId: 'cam1', date: today, start: minToHm(cur - 40), end: minToHm(cur + 80), enabled: true },
-      { id: 'sch2', classId: 'c2', cameraId: 'cam2', date: today, start: minToHm(cur + 120), end: minToHm(cur + 210), enabled: true },
-      { id: 'sch3', classId: 'c1', cameraId: 'cam1', date: addDays(today, 1), start: '08:00', end: '09:30', enabled: true },
-      { id: 'sch4', classId: 'c2', cameraId: 'cam2', date: addDays(today, 1), start: '14:00', end: '15:30', enabled: true },
-      { id: 'sch5', classId: 'c1', cameraId: 'cam1', date: y1, start: '08:00', end: '09:30', enabled: true },
-    ],
-    attendance: [
-      { date: today, classId: 'c1', savedAt: ago(140), records: records(c1Ids, absentIds) },
-      { date: y1, classId: 'c1', savedAt: ago(60 * 24 + 140), records: records(c1Ids) },
-      { date: y1, classId: 'c2', savedAt: ago(60 * 24 + 130), records: records(c2Ids, ['st20']) },
-      { date: y2, classId: 'c1', savedAt: ago(60 * 48 + 140), records: records(c1Ids, ['st4']) },
-      { date: y2, classId: 'c2', savedAt: ago(60 * 48 + 130), records: records(c2Ids) },
-    ],
-    journals: [
-      journal(
-        'j1',
-        'c1',
-        y1,
-        'published',
-        'voice',
-        {
-          meal: 'Các con ăn ngon miệng, hầu hết ăn hết suất cơm với canh bí đỏ và thịt viên sốt cà chua.',
-          learning: 'Cả lớp tham gia hoạt động vẽ tranh chủ đề “Gia đình của bé”. Các con rất hào hứng giới thiệu bức tranh của mình.',
-          sleep: 'Các con ngủ trưa khoảng 90 phút, giấc ngủ sâu.',
-          health: 'Không có biểu hiện bất thường về sức khỏe.',
-          emotion: 'Các con vui vẻ, hoạt bát, hòa đồng với bạn.',
-          note: 'Minh An mạnh dạn giơ tay phát biểu trong giờ học, cô khen con trước lớp.',
-        },
-        ['demo:drawing', 'demo:meal'],
-        ago(60 * 24 - 60 * 3),
-      ),
-      journal(
-        'j2',
-        'c1',
-        y2,
-        'published',
-        'manual',
-        {
-          meal: 'Bữa trưa có cháo gà và rau củ luộc. Các con ăn tốt, một vài bạn xin thêm.',
-          learning: 'Các con học đếm số từ 1 đến 10 qua trò chơi xếp khối gỗ.',
-          sleep: 'Cả lớp ngủ trưa đúng giờ, khoảng 80 phút.',
-          health: 'Sức khỏe các con ổn định.',
-          emotion: 'Các con vui vẻ trong giờ chơi ngoài trời.',
-          note: '',
-        },
-        ['demo:play'],
-        ago(60 * 48 - 60 * 3),
-      ),
-      journal(
-        'j3',
-        'c1',
-        y3,
-        'published',
-        'voice',
-        {
-          meal: 'Các con ăn hết suất, món súp bí đỏ được các con rất thích.',
-          learning: 'Hoạt động kể chuyện “Thỏ và Rùa”, các con trả lời câu hỏi của cô rất tốt.',
-          sleep: 'Các con ngủ ngon, khoảng 90 phút.',
-          health: 'Không có ghi nhận bất thường.',
-          emotion: 'Vui vẻ, thích thú với giờ kể chuyện.',
-          note: '',
-        },
-        ['demo:book'],
-        ago(60 * 72 - 60 * 3),
-      ),
-      journal(
-        'j4',
-        'c2',
-        today,
-        'draft',
-        'manual',
-        {
-          meal: 'Các con ăn sáng với phở bò, ăn khá tốt.',
-          learning: '',
-          sleep: '',
-          health: '',
-          emotion: '',
-          note: '',
-        },
-        [],
-        ago(75),
-      ),
-      journal(
-        'j5',
-        'c2',
-        y1,
-        'published',
-        'voice',
-        {
-          meal: 'Các con ăn ngon, hết suất cơm cá sốt.',
-          learning: 'Cả lớp tập hát bài “Cả nhà thương nhau”.',
-          sleep: 'Ngủ trưa khoảng 85 phút.',
-          health: 'Sức khỏe ổn định.',
-          emotion: 'Vui vẻ, hào hứng.',
-          note: '',
-        },
-        ['demo:play'],
-        ago(60 * 24 - 60 * 3),
-      ),
-    ],
     messages: [
       {
         id: 'm1',

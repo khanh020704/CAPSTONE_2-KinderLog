@@ -11,8 +11,11 @@ import * as bcrypt from 'bcryptjs';
 import { Brackets, Not, Repository } from 'typeorm';
 import { AuthUser } from '../../common/decorators';
 import { UserRole } from '../../common/enums';
+import { foldSearch, likeFolded } from '../../common/utils/sql.util';
 import { AccessService } from '../access/access.service';
 import { ClassEntity } from '../classes/entities/class.entity';
+import { DailyJournal } from '../daily-journals/entities/daily-journal.entity';
+import { JournalPhoto } from '../daily-journals/entities/journal-photo.entity';
 import { ParentStudentMap } from '../students/entities/parent-student-map.entity';
 import {
   CreateUserDto,
@@ -78,13 +81,13 @@ export class UsersService {
     if (actor.role === UserRole.PRINCIPAL)
       qb.andWhere('u.role IN (:...roles)', { roles: MANAGEABLE[actor.role] });
     if (q.search) {
-      const s = `%${q.search.trim()}%`;
+      const s = foldSearch(q.search);
       qb.andWhere(
         new Brackets((w) =>
           w
-            .where('unaccent(u.fullName) ILIKE unaccent(:s)', { s })
+            .where(likeFolded('u.fullName', 's'), { s })
             .orWhere('u.phone LIKE :s', { s })
-            .orWhere('u.email ILIKE :s', { s }),
+            .orWhere('u.email LIKE :s', { s }),
         ),
       );
     }
@@ -148,7 +151,15 @@ export class UsersService {
   async remove(actor: AuthUser, id: string) {
     if (id === actor.id) throw new BadRequestException('You cannot delete your own account');
     await this.findOne(actor, id);
-    await this.users.delete(id);
+    // SQL Server allows only one cascade path per table, so the "who did it" references are cleared here
+    // instead of by ON DELETE SET NULL; parent_student_map still cascades.
+    await this.users.manager.transaction(async (tx) => {
+      await tx.update(ClassEntity, { homeroomTeacherId: id }, { homeroomTeacherId: null });
+      await tx.update(DailyJournal, { createdById: id }, { createdById: null });
+      await tx.update(DailyJournal, { approvedById: id }, { approvedById: null });
+      await tx.update(JournalPhoto, { uploadedById: id }, { uploadedById: null });
+      await tx.delete(User, id);
+    });
     return { success: true };
   }
 

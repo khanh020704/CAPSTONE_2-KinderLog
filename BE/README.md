@@ -1,6 +1,6 @@
 # KinderLog API — PDJRS Backend
 
-NestJS 11 · TypeORM 0.3 · PostgreSQL 16 · Redis 7 · JWT/RBAC · Whisper + Claude (AI pipeline)
+NestJS 11 · TypeORM 0.3 · SQL Server 2022 (driver `mssql`) · Redis 7 · JWT/RBAC · Whisper + Claude (AI pipeline)
 
 Backend của **Preschool Daily Journal & Reporting System**. Kiến trúc *Modular Monolith*: mỗi nghiệp vụ là một
 NestJS module độc lập, dùng chung lớp `common/` (enum, guard, decorator, filter) và hai module toàn cục
@@ -11,10 +11,11 @@ src/
 ├── main.ts                     # CORS, ValidationPipe, Swagger (/api/docs), static /uploads
 ├── app.module.ts               # global guards: Throttler → JwtAuth → Roles; global exception filter
 ├── config/configuration.ts     # .env + Joi validation
-├── common/                     # enums, @Roles/@Public/@CurrentUser, guards, filter, date utils (timezone-aware)
+├── common/                     # enums, @Roles/@Public/@CurrentUser, guards, filter, date utils, sql.util (biểu thức T-SQL)
 ├── database/
 │   ├── data-source.ts          # dùng chung cho app và TypeORM CLI
-│   ├── migrations/             # InitialSchema (8 bảng + extension unaccent)
+│   ├── create-database.ts      # tạo database `DB_NAME` nếu chưa có (SQL Server không tự tạo)
+│   ├── migrations/             # InitialSchema (8 bảng, CHECK cho enum, FK)
 │   └── seeds/seed.ts           # dữ liệu demo khớp FE/src/store/seed.js
 └── modules/
     ├── access/                 # AccessService: SYSTEM_ADMIN > PRINCIPAL (trường) > TEACHER (lớp chủ nhiệm) > PARENT (con)
@@ -63,9 +64,9 @@ Yêu cầu: Node.js ≥ 20, Docker Desktop.
 ```bash
 cd BE
 cp .env.example .env          # đã có sẵn .env mặc định cho demo
-docker compose up -d          # PostgreSQL :5432 + Redis :6379  (thêm --profile tools để có Adminer :8080)
+docker compose up -d          # SQL Server 2022 :1433 + Redis :6379 (lần đầu SQL Server cần ~20 s để sẵn sàng)
 npm install
-npm run migration:run         # tạo 8 bảng
+npm run migration:run         # tạo database kinderlog (nếu chưa có) + 8 bảng
 npm run seed                  # dữ liệu demo (chạy lại bất cứ lúc nào để reset)
 npm run start:dev             # http://localhost:3000/api  ·  Swagger: http://localhost:3000/api/docs
 ```
@@ -74,7 +75,8 @@ npm run start:dev             # http://localhost:3000/api  ·  Swagger: http://l
 |---|---|
 | `npm run migration:generate` | Sinh migration mới sau khi sửa entity |
 | `npm run migration:revert` | Huỷ migration gần nhất |
-| `npm run db:reset` | Drop schema → migrate → seed |
+| `npm run db:reset` | Drop toàn bộ bảng → migrate → seed |
+| `npm run test:e2e` | 59 test tích hợp trên DB thật (seed lại trước khi chạy) |
 | `npm run lint` / `npm run format` | ESLint / Prettier |
 
 ### Tài khoản demo (mật khẩu `123456`, giống FE)
@@ -89,6 +91,27 @@ npm run start:dev             # http://localhost:3000/api  ·  Swagger: http://l
 
 Phụ huynh khác: `09040000NN` (NN = 01…31). Seed tạo sẵn ~2 tuần nhật ký đã duyệt; **hôm nay lớp Mặt Trời 1 để trống**
 để demo trực tiếp Bulk Logging / Voice.
+
+### Kết nối SQL Server
+
+| Thông số | Giá trị (mặc định trong `.env`) |
+|---|---|
+| Server | `localhost,1433` |
+| Đăng nhập | SQL Server Authentication — `sa` / `KinderLog@2026` (`DB_PASSWORD`, cũng là mật khẩu SA của container) |
+| Database | `kinderlog` |
+| Tuỳ chọn | Trust server certificate (container dùng chứng chỉ tự ký) |
+
+Mở bằng SSMS, Azure Data Studio, DBeaver hoặc extension *SQL Server (mssql)* của VS Code. Dữ liệu nằm trong Docker
+volume `mssqldata` (không mất khi `docker compose down`, chỉ mất khi thêm `-v`).
+
+Ghi chú khi chuyển từ PostgreSQL:
+
+* Chuỗi dùng `nvarchar` (Unicode, cho tiếng Việt), văn bản dài `nvarchar(MAX)`; enum lưu `nvarchar` + ràng buộc `CHECK`;
+  khoá chính `uniqueidentifier` (`NEWSEQUENTIALID()`), thời gian `datetime2` theo giờ `APP_TIMEZONE`.
+* SQL Server chỉ cho một đường cascade tới mỗi bảng, nên các FK "người ghi / người duyệt / GVCN" là `NO ACTION` và
+  `UsersService.remove()` gỡ các tham chiếu đó trong cùng transaction trước khi xoá tài khoản.
+* Tìm kiếm không dấu ("huong" → "Hương", "duc" → "Đức") dùng collation `Latin1_General_100_CI_AI` (xem `sql.util.ts`).
+* Thống kê dùng `SUM(CASE WHEN …)` thay cho `COUNT(*) FILTER`, `AVG(CAST(… AS float))` để không bị chia nguyên.
 
 ## 3. API chính
 
