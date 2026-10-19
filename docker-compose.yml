@@ -1,0 +1,38 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: kinderlog-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      SA_PASSWORD: "123456"
+      MSSQL_PID: "Developer"
+      # Limit SQL Server memory usage to 2GB (minimum required)
+      MSSQL_MEMORY_LIMIT_MB: "2048"
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+    networks:
+      - kinderlog-network
+    restart: unless-stopped
+    # Reserve 2GB RAM for this container
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+        reservations:
+          memory: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '123456' -Q 'SELECT 1' -C -No 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+
+networks:
+  kinderlog-network:
+    driver: bridge
+
+volumes:
+  sqlserver_data:
+    driver: local
