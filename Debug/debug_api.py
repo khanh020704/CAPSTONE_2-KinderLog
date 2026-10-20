@@ -2,13 +2,13 @@
 
 The script builds a throwaway environment, runs every check against it and cleans up:
 
-  1. creates the database "kinderlog_debug" with `npm run migrate`
+  1. creates the SQL Server database "kinderlog_debug" with `npm run migrate`
   2. creates an admin account and starts the server on its own port
   3. calls every endpoint over HTTP and checks the answers (about 200 checks)
   4. checks that the Swagger description matches the server
   5. stops the server, drops the database and deletes the uploaded test files
 
-The real "kinderlog" database is never touched. Only the Python standard library is used.
+The real database (DB_NAME in BE/.env) is never touched. Only the Python standard library is used.
 
 Usage:
     python Debug/debug_api.py              run everything, print failures and a summary
@@ -55,7 +55,9 @@ class Environment:
         self.uploads = Path(tempfile.mkdtemp(prefix="kinderlog-debug-uploads-"))
         self.log_path = Path(tempfile.gettempdir()) / "kinderlog-debug-server.log"
         # The keyword engine keeps the checks repeatable and free: no AI call leaves this machine.
-        self.env = {**os.environ, "MONGODB_DB": DB_NAME, "PORT": str(PORT), "UPLOAD_DIR": str(self.uploads), "JOURNAL_DRAFT_ENGINE": "keywords"}
+        # Server speech-to-text is off for the same reason (Debug/test_voice_ai.py covers AI and Whisper).
+        self.env = {**os.environ, "DB_NAME": DB_NAME, "PORT": str(PORT), "UPLOAD_DIR": str(self.uploads),
+                    "JOURNAL_DRAFT_ENGINE": "keywords", "SPEECH_TO_TEXT": "off"}
         self.server = None
         self.log_file = None
 
@@ -440,7 +442,11 @@ def group_voice(r, w, env):
     r.check("a sentence naming a child becomes a personal note", draft.status == 200 and draft["personal"] == {w.an["id"]: "Bé An ngủ hơi muộn."}, draft)
     r.check("'các bạn nam' is not a child called Nam", draft.status == 200 and "Các bạn nam" in draft["sections"]["learning"], draft)
     r.check("no recording means audioUrl is null", draft.status == 200 and draft["audioUrl"] is None, draft)
-    r.check("the response says which engine made the draft", draft.status == 200 and draft["engine"] == "keywords" and draft["entries"] == [], draft)
+    r.check("the response says which engine and transcript were used", draft.status == 200 and draft["engine"] == "keywords"
+            and draft["transcriptSource"] == "browser" and isinstance(draft["entries"], list), draft)
+    # An is marked absent today, so what she did is checked against that; nothing else is.
+    r.check("the only point is that An is marked absent today", draft.status == 200 and [i["type"] for i in draft["issues"]] == ["attendance_mismatch"]
+            and draft["issues"][0]["studentIds"] == [w.an["id"]], draft)
 
     # The AI engine returns structured entries; building the draft from them is plain code, checked here without any AI call.
     an, ngoc = w.an["id"], w.ngoc["id"]
@@ -465,8 +471,16 @@ def group_voice(r, w, env):
     r.check("entries: unknown children, unknown sections and empty text are dropped",
             len(built["entries"]) == 5 and built["sections"]["emotion"] == "" and built["sections"]["note"] == "", built["entries"])
     full_name = http("POST", "/journals/voice-draft", {"transcript": "Trần Bảo Ngọc hôm nay ăn ít. Bé Phúc rất ngoan"}, w.T)
-    r.check("full name matches; a child of another class does not", full_name.status == 200 and list(full_name["personal"]) == [w.ngoc["id"]]
-            and "Bé Phúc rất ngoan." in full_name["sections"]["emotion"], full_name)
+    held = [i for i in (full_name.get("issues") or []) if i["held"]]
+    r.check("full name matches; a child of another class is held, not shared", full_name.status == 200 and list(full_name["personal"]) == [w.ngoc["id"]]
+            and "Phúc" not in " ".join(full_name["sections"].values()) and len(held) == 1 and held[0]["type"] == "unknown_student"
+            and held[0]["text"] == "Bé Phúc rất ngoan." and held[0]["status"] == "open", full_name)
+    w.held_draft = full_name.json
+    near = http("POST", "/journals/voice-draft", {"transcript": "bạn Trần Bảo Ngoc hôm nay ăn ít. Có một bạn bị ngã trầy đầu gối"}, w.T)
+    kinds = sorted(i["type"] for i in near.get("issues") or [])
+    r.check("a misspelled name and an unnamed child are held for confirmation", near.status == 200 and near["personal"] == {}
+            and kinds == ["health_alert", "missing_student", "name_mismatch"]
+            and next(i for i in near["issues"] if i["type"] == "name_mismatch")["candidates"] == [w.ngoc["id"]], near)
     r.expect("nothing was said", http("POST", "/journals/voice-draft", {"transcript": "   "}, w.T), 422, "NO_SPEECH")
     webm = b"\x1aE\xdf\xa3" + b"\x00" * 2048
     only_audio = {"audio": File("rec.webm", webm, "audio/webm;codecs=opus")}
@@ -478,6 +492,34 @@ def group_voice(r, w, env):
     r.expect("wrong audio file type", http("POST", "/journals/voice-draft", token=w.T, form={"audio": File("x.txt", b"hi", "text/plain")}), 400, "VALIDATION_ERROR")
     r.expect("teacher without a class", http("POST", "/journals/voice-draft", {"transcript": "x"}, w.T3), 404, "NO_CLASS")
     r.expect("parents may not draft", http("POST", "/journals/voice-draft", {"transcript": "x"}, w.P), 403, "FORBIDDEN")
+
+    # Two steps: the recording -> text the teacher corrects -> the draft, with the stored recording.
+    rec = {"audio": File("rec.webm", webm, "audio/webm"), "transcript": "bé hưng bị ho"}
+    heard = http("POST", "/journals/transcribe", token=w.T, form=rec)
+    r.check("transcribe: the text and the stored recording", heard.status == 200 and heard["transcript"] == "bé hưng bị ho"
+            and heard["transcriptSource"] == "browser" and re.search(r"/uploads/[0-9a-f]{32}\.webm$", heard.get("audioUrl") or ""), heard)
+    r.expect("transcribe needs the recording", http("POST", "/journals/transcribe", {"transcript": "x"}, w.T), 400, "VALIDATION_ERROR")
+    r.expect("transcribe: parents may not", http("POST", "/journals/transcribe", token=w.P, form=rec), 403, "FORBIDDEN")
+    corrected = http("POST", "/journals/voice-draft", {"transcript": "Trần Bảo Ngọc ăn ít.", "audioUrl": heard.get("audioUrl")}, w.T)
+    r.check("the corrected text makes the draft and keeps the recording", corrected.status == 200 and corrected["transcriptSource"] == "teacher"
+            and corrected["audioUrl"] == heard.get("audioUrl") and corrected["personal"] == {w.ngoc["id"]: "Trần Bảo Ngọc ăn ít."}, corrected)
+    r.expect("an audioUrl that is not an uploaded recording", http("POST", "/journals/voice-draft", {"transcript": "x", "audioUrl": "https://evil.example/a.webm"}, w.T), 400, "VALIDATION_ERROR")
+
+    # Checked against the day's attendance (today: An absent "Về sớm", Huy late, Ngọc not recorded).
+    mismatches = lambda said, date=TODAY: [i for i in http("POST", "/journals/voice-draft", {"transcript": said, "date": date}, w.T).get("issues") or []
+                                           if i["type"] == "attendance_mismatch"]
+    absent_ate = mismatches("Bé An ăn hết suất")
+    r.check("an absent child who ate lunch is a point to confirm", len(absent_ate) == 1 and absent_ate[0]["studentIds"] == [an]
+            and not absent_ate[0]["held"] and "Về sớm" in absent_ate[0]["message"], absent_ate)
+    r.check("why an absent child is away is fine", mismatches("Bé An hôm nay nghỉ ốm") == [])
+    late_away = mismatches("Bé Huy hôm nay nghỉ học")
+    r.check("a child marked present (late) who stayed home is a point to confirm", len(late_away) == 1 and late_away[0]["studentIds"] == [w.huy["id"]], late_away)
+    r.check("a day without attendance is not checked", mismatches("Bé An ăn hết suất", day(-3)) == [])
+    all_here = mismatches("Hôm nay tất cả các bạn đi học đầy đủ")
+    r.check('"everyone was at school" on a day a child is absent is a point to confirm', len(all_here) == 1 and all_here[0]["studentIds"] == [an]
+            and "every parent" in all_here[0]["message"], all_here)
+    r.check('"the children ate well" is not about attendance', mismatches("Các con ăn uống đầy đủ") == [])
+    r.expect("a malformed date", http("POST", "/journals/voice-draft", {"transcript": "x", "date": "17-10"}, w.T), 400, "VALIDATION_ERROR")
 
 
 def group_journal(r, w, env):
@@ -529,9 +571,10 @@ def group_journal(r, w, env):
     published = http("POST", f"/journals/{jid}/publish", token=w.T)
     r.check("publish", published.status == 200 and published["status"] == "published" and isinstance(published["publishedAt"], int), published)
     r.expect("publish twice", http("POST", f"/journals/{jid}/publish", token=w.T), 422, "INVALID_STATE")
-    r.expect("edit after publishing", put(content), 422, "INVALID_STATE")
-    r.expect("approve after publishing", http("POST", f"/journals/{jid}/approve", token=w.T), 422, "INVALID_STATE")
-    r.expect("record after publishing", http("POST", f"/journals/{jid}/recordings", w.draft, w.T), 422, "INVALID_STATE")
+    r.expect("approve while published and unchanged", http("POST", f"/journals/{jid}/approve", token=w.T), 422, "INVALID_STATE")
+    r.check("first publish is revision 1", published.status == 200 and published["revision"] == 1 and published["editedAt"] is None
+            and published["unpublishedChanges"] is False, published)
+    w.journal_content = content  # editing after publishing is checked in the "parent" group
 
     voice = http("POST", "/journals", {"date": day(-1), "source": "voice", "sections": w.draft["sections"], "personal": w.draft["personal"],
                                        "transcript": w.draft["transcript"], "audio": [w.recording]}, w.T)
@@ -553,12 +596,37 @@ def group_journal(r, w, env):
     history = http("GET", "/journals", token=w.T)
     items = history.get("items") or []
     r.check("history is newest first", [i["date"] for i in items] == [TODAY, day(-1), day(-2)] and items[0]["status"] == "published", history)
+    # Points to confirm: kept with the journal, block approval until decided, then let it through.
+    held = w.held_draft
+    review = http("POST", "/journals", {"date": day(-5), "source": "voice", "sections": held["sections"], "personal": held["personal"],
+                                        "transcript": held["transcript"], "issues": held["issues"]}, w.T)
+    rid = review.get("id")
+    issue = (review.get("issues") or [{}])[0]
+    r.check("voice journal keeps its open points", review.status == 201 and len(review["issues"]) == 1 and issue["status"] == "open" and issue["held"], review)
+    r.expect("approve while a point is open", http("POST", f"/journals/{rid}/approve", token=w.T), 422, "REVIEW_PENDING")
+    body = {"sections": held["sections"], "personal": held["personal"], "photos": []}
+    r.expect("a held point needs a child, the class, or leave out", http("PUT", f"/journals/{rid}", {**body, "issues": [{"id": issue.get("id"), "status": "resolved", "resolution": "confirmed"}]}, w.T), 400, "VALIDATION_ERROR")
+    r.expect("assigning needs a child of the class", http("PUT", f"/journals/{rid}", {**body, "issues": [{"id": issue.get("id"), "status": "resolved", "resolution": "assigned", "assignedTo": [w.phuc["id"]]}]}, w.T), 400, "VALIDATION_ERROR")
+    still = http("GET", f"/journals/{rid}", token=w.T)
+    r.check("a refused decision changes nothing", still.json and still["issues"][0]["status"] == "open", still)
+    decided = http("PUT", f"/journals/{rid}", {**body, "personal": {**held["personal"], huy: "Bé Phúc rất ngoan."},
+                                                "issues": [{"id": issue.get("id"), "status": "resolved", "resolution": "assigned", "assignedTo": [huy]}]}, w.T)
+    r.check("the teacher's decision is stored", decided.status == 200 and decided["issues"][0]["status"] == "resolved"
+            and decided["issues"][0]["resolution"] == "assigned" and decided["issues"][0]["assignedTo"] == [huy] and decided["personal"][huy] == "Bé Phúc rất ngoan.", decided)
+    r.expect("approve once every point is decided", http("POST", f"/journals/{rid}/approve", token=w.T), 200)
+    forged = http("POST", "/journals", {"date": day(-6), "source": "voice", "issues": [{"id": "not-an-issue", "type": "x"}]}, w.T)
+    r.expect("issues must be sent as the voice draft returned them", forged, 400, "VALIDATION_ERROR")
+    # The journal already says "Trần Bảo Ngọc hôm nay ăn ít".
+    later = http("POST", "/journals/voice-draft", {"transcript": "Trần Bảo Ngọc ăn hết suất", "journalId": rid}, w.T)
+    r.check("a further recording is checked against what the journal says", later.status == 200 and "contradiction" in [i["type"] for i in later.get("issues") or []], later)
+    http("DELETE", f"/admin/class-daily-summaries/{rid}", token=w.A)
+
     count = lambda query: len(http("GET", f"/journals{query}", token=w.T).get("items") or [])
     r.check("history filters", (count("?status=published"), count("?status=review"), count("?status=draft"), count(f"?date={TODAY}")) == (1, 2, 0, 1))
     r.check("another teacher's history is separate", http("GET", "/journals", token=w.T2).get("items") == [])
     r.expect("unknown status filter", http("GET", "/journals?status=x", token=w.T), 400, "VALIDATION_ERROR")
     r.expect("malformed journal id", http("GET", "/journals/abc", token=w.T), 404, "NOT_FOUND")
-    r.expect("unknown journal id", http("GET", "/journals/64b000000000000000000000", token=w.T), 404, "NOT_FOUND")
+    r.expect("unknown journal id", http("GET", "/journals/999999999", token=w.T), 404, "NOT_FOUND")
 
     dashboard = http("GET", "/teacher/dashboard", token=w.T)
     r.check("dashboard numbers", dashboard.status == 200 and dashboard["class"]["name"] == "Mặt Trời 1" and dashboard["students"] == 3 and dashboard["date"] == TODAY
@@ -586,6 +654,209 @@ def group_inbox(r, w, env):
     r.check("mark all as read", http("GET", "/notifications/unread-count", token=w.P).json == {"count": 0})
     r.expect("malformed ids", http("POST", "/notifications/read", {"ids": ["x"]}, w.P), 400, "VALIDATION_ERROR")
     r.expect("neither ids nor all", http("POST", "/notifications/read", {}, w.P), 400, "VALIDATION_ERROR")
+
+
+def group_parent(r, w, env):
+    r.start("parent", "Parent journal view, editing after publishing")
+    an, ngoc, huy, jid, content = w.an["id"], w.ngoc["id"], w.huy["id"], w.journal_id, w.journal_content
+    as_parent = lambda child, token=None, date=TODAY: http("GET", f"/parent/journals/by-date?studentId={child}&date={date}", token=token or w.P)
+    listed = lambda child, token=None, query="": http("GET", f"/parent/journals?studentId={child}{query}", token=token or w.P)
+    titles = lambda token: [i["title"] for i in http("GET", "/notifications?unread=true", token=token).get("items") or []]
+    read_all = lambda: [http("POST", "/notifications/read", {"all": True}, t) for t in (w.P, w.P2, w.P3)]
+
+    # What a parent may see
+    mine = listed(an)
+    items = mine.get("items") or []
+    r.check("a parent lists only published journals", mine.status == 200 and [i["id"] for i in items] == [jid] and items[0]["date"] == TODAY
+            and isinstance(items[0]["publishedAt"], int) and items[0]["editedAt"] is None, mine)
+    seen = as_parent(an)
+    r.check("the published content reaches the parent", seen.status == 200 and seen["sections"] == content["sections"] and seen["photos"] == content["photos"]
+            and seen["classId"] == w.c1["id"], seen)
+    r.check("only this child's note and attendance", seen.status == 200 and seen["personalNote"] == "Bé An hơi ho." and seen["attendance"] == {"status": "absent", "note": "Về sớm"}, seen)
+    r.check("no other child's notes, transcript or recordings", seen.json is not None and not {"personal", "transcript", "audio", "issues", "source"} & set(seen.json), sorted(seen.json or {}))
+    other = as_parent(ngoc, w.P2)
+    r.check("another parent: no note, not recorded", other.status == 200 and other["personalNote"] == "" and other["attendance"] is None
+            and other["sections"] == content["sections"], other)
+    r.expect("not your child", as_parent(ngoc), 403, "FORBIDDEN")
+    r.expect("an inactive link gives no access", listed(huy, w.P3), 403, "FORBIDDEN")
+    r.expect("a teacher cannot use the parent view", listed(an, w.T), 403, "FORBIDDEN")
+    r.expect("student id is required", http("GET", "/parent/journals", token=w.P), 400, "VALIDATION_ERROR")
+    r.expect("bad month", listed(an, query="&month=2026-13"), 400, "VALIDATION_ERROR")
+    r.expect("bad date", http("GET", f"/parent/journals/by-date?studentId={an}&date=11-10-2026", token=w.P), 400, "VALIDATION_ERROR")
+    r.expect("an unpublished day is not shown", as_parent(an, date=day(-1)), 404, "NOT_FOUND")
+    r.check("month filter", len(listed(an, query=f"&month={TODAY[:7]}").get("items") or []) == 1 and listed(an, query="&month=2001-01").get("items") == [])
+    w.create("parent-student-maps", parentId=w.tam["id"], studentId=w.gone["id"], relationship="Mẹ")
+    r.expect("a child who left the school: no access, as in GET /me", listed(w.gone["id"], w.P3), 403, "FORBIDDEN")
+    phuc = w.phuc["id"]
+    r.check("a parent of another class sees none of this class", listed(phuc, w.P3).get("items") == [] and as_parent(phuc, w.P3).status == 404)
+    summaries_before = http("GET", "/admin/class-daily-summaries", token=w.A).get("total")
+    photos_before = http("GET", "/admin/journal-photos", token=w.A).get("total")
+
+    # A note is tied to a child by id, never by the name shown on screen.
+    put = lambda body: http("PUT", f"/journals/{jid}", body, w.T)
+    r.expect("a note keyed by a child's name is refused", put({**content, "personal": {"Nguyễn Minh An": "Bé An hơi ho."}}), 400, "VALIDATION_ERROR")
+
+    # A statement about an unconfirmed child never reaches parents; nothing is shown before PUBLISHED.
+    held = w.held_draft
+    created = http("POST", "/journals", {"date": day(-4), "source": "voice", "sections": held["sections"], "personal": held["personal"],
+                                         "transcript": held["transcript"], "issues": held["issues"]}, w.T)
+    hid = created.get("id")
+    dated = lambda child, token: [i["date"] for i in listed(child, token).get("items") or []]
+    r.check("review with an open point: not shown to parents", created.status == 201 and created["status"] == "review"
+            and as_parent(ngoc, w.P2, day(-4)).status == 404 and day(-4) not in dated(ngoc, w.P2), created)
+    decisions = [{"id": i["id"], "status": "resolved", "resolution": "discarded" if i["held"] else "confirmed"} for i in created.get("issues") or []]
+    http("PUT", f"/journals/{hid}", {"sections": held["sections"], "personal": held["personal"], "photos": [], "issues": decisions}, w.T)
+    approved = http("POST", f"/journals/{hid}/approve", token=w.T)
+    r.check("approved: still not shown to parents", approved.status == 200 and approved["status"] == "approved"
+            and as_parent(ngoc, w.P2, day(-4)).status == 404 and day(-4) not in dated(ngoc, w.P2), approved)
+    http("POST", f"/journals/{hid}/publish", token=w.T)
+    ngoc_view = as_parent(ngoc, w.P2, day(-4))
+    r.check("published: the confirmed note reaches that child's parent", ngoc_view.status == 200 and ngoc_view["personalNote"] == "Trần Bảo Ngọc hôm nay ăn ít.", ngoc_view)
+    r.check("the left-out statement reaches no parent", "Phúc" not in json.dumps(ngoc_view.json, ensure_ascii=False)
+            and "Phúc" not in json.dumps(as_parent(an, date=day(-4)).json, ensure_ascii=False) and as_parent(phuc, w.P3, day(-4)).status == 404, ngoc_view)
+    an_view = as_parent(an, date=day(-4))
+    r.check("another child's parent sees the class part, not Ngọc's note", an_view.status == 200 and an_view["personalNote"] == ""
+            and "Ngọc" not in json.dumps(an_view.json, ensure_ascii=False), an_view)
+    r.check("no notification reaches a parent of another class", titles(w.P3) == [], titles(w.P3))
+    http("DELETE", f"/admin/class-daily-summaries/{hid}", token=w.A)
+
+    # Editing after publishing: the change stays with the teacher until it is approved and published
+    read_all()
+    same = put(content)
+    r.check("saving unchanged content keeps it published", same.status == 200 and same["status"] == "published" and same["revision"] == 1, same)
+    note_changed = {**content, "personal": {an: "Bé An đã đỡ ho."}}
+    edited = put(note_changed)
+    r.check("a published journal can be edited", edited.status == 200 and edited["status"] == "draft" and edited["unpublishedChanges"] is True
+            and edited["personal"] == {an: "Bé An đã đỡ ho."} and edited["revision"] == 1, edited)
+    stored = http("GET", f"/journals/{jid}", token=w.T)
+    r.check("the edit is stored", stored.status == 200 and stored["personal"] == {an: "Bé An đã đỡ ho."} and stored["status"] == "draft", stored)
+    r.check("parents still see the published version", as_parent(an).get("personalNote") == "Bé An hơi ho." and listed(an).get("items", [{}])[0].get("editedAt") is None)
+    r.check("nobody is notified of an unpublished edit", titles(w.P) == [] and titles(w.P2) == [])
+    history = http("GET", "/journals", token=w.T).get("items") or []
+    r.check("the history marks the unpublished change", any(i["id"] == jid and i["status"] == "draft" and i["unpublishedChanges"] and isinstance(i["publishedAt"], int) for i in history), history)
+    r.expect("a change must be approved before publishing", http("POST", f"/journals/{jid}/publish", token=w.T), 422, "INVALID_STATE")
+    http("POST", f"/journals/{jid}/approve", token=w.T)
+    republished = http("POST", f"/journals/{jid}/publish", token=w.T)
+    r.check("publishing the change", republished.status == 200 and republished["status"] == "published" and republished["revision"] == 2
+            and isinstance(republished["editedAt"], int) and republished["publishedAt"] == items[0]["publishedAt"]
+            and republished["unpublishedChanges"] is False, republished)
+    now_seen = as_parent(an)
+    r.check("parents see the update", now_seen.status == 200 and now_seen["personalNote"] == "Bé An đã đỡ ho." and isinstance(now_seen["editedAt"], int)
+            and now_seen["publishedAt"] == items[0]["publishedAt"] and listed(an).get("items", [{}])[0].get("editedAt") == now_seen["editedAt"], now_seen)
+    r.check("a changed note: only that child's parents are told", titles(w.P) == ["Note about Nguyễn Minh An updated"] and titles(w.P2) == [] and titles(w.P3) == [],
+            {"P": titles(w.P), "P2": titles(w.P2)})
+    read_all()
+
+    class_changed = {**note_changed, "sections": {**content["sections"], "meal": "Các con ăn hết suất, thêm sữa chua."}}
+    put(class_changed)
+    http("POST", f"/journals/{jid}/approve", token=w.T)
+    third = http("POST", f"/journals/{jid}/publish", token=w.T)
+    r.check("a class change is revision 3", third.status == 200 and third["revision"] == 3, third)
+    r.check("a class change: every parent of the class is told, once", titles(w.P) == ["Journal updated"] and titles(w.P2) == ["Journal updated"] and titles(w.P3) == [],
+            {"P": titles(w.P), "P2": titles(w.P2)})
+    r.check("both parents see the new class text", as_parent(an).get("sections", {}).get("meal") == as_parent(ngoc, w.P2).get("sections", {}).get("meal") == "Các con ăn hết suất, thêm sữa chua.")
+    read_all()
+
+    # Recording more into a published journal sends it back to review, too.
+    more = http("POST", f"/journals/{jid}/recordings", {"sections": {"note": "Mai các con mặc đồng phục."}, "personal": {}, "transcript": "Mai các con mặc đồng phục"}, w.T)
+    r.check("record more after publishing", more.status == 200 and more["status"] == "review" and more["sections"]["note"] == "Mai các con mặc đồng phục.", more)
+    r.check("the recording is not shown to parents yet", as_parent(an).get("sections", {}).get("note") == "")
+    http("POST", f"/journals/{jid}/approve", token=w.T)
+    http("POST", f"/journals/{jid}/publish", token=w.T)
+    r.check("published again, parents see it", as_parent(an).get("sections", {}).get("note") == "Mai các con mặc đồng phục." and titles(w.P2) == ["Journal updated"])
+    read_all()
+    r.check("editing and publishing again creates no new records", http("GET", "/admin/class-daily-summaries", token=w.A).get("total") == summaries_before
+            and http("GET", "/admin/journal-photos", token=w.A).get("total") == photos_before and dated(an, w.P).count(TODAY) == 1)
+    w.parent_journal = as_parent(an).json
+    w.parent_journals = listed(an).json
+
+
+def group_corrections(r, w, env):
+    r.start("corrections", "A further recording that corrects an earlier one")
+    an, ngoc = w.an["id"], w.ngoc["id"]
+    as_parent = lambda date, child=an, token=None: http("GET", f"/parent/journals/by-date?studentId={child}&date={date}", token=token or w.P)
+    titles = lambda token: [i["title"] for i in http("GET", "/notifications?unread=true", token=token).get("items") or []]
+    for t in (w.P, w.P2):
+        http("POST", "/notifications/read", {"all": True}, t)
+    first_said = "Bé An hôm nay ăn nửa suất cơm. Cả lớp học hát"
+
+    def create(date, said):
+        d = http("POST", "/journals/voice-draft", {"transcript": said, "date": date}, w.T)
+        return http("POST", "/journals", {"date": date, "source": "voice", "sections": d["sections"], "personal": d["personal"],
+                                          "transcript": d["transcript"], "issues": d["issues"]}, w.T)
+
+    def record(jid, said):
+        d = http("POST", "/journals/voice-draft", {"transcript": said, "journalId": jid}, w.T)
+        saved = http("POST", f"/journals/{jid}/recordings", {"sections": d["sections"], "personal": d["personal"], "transcript": d["transcript"],
+                                                             "issues": d["issues"]}, w.T)
+        return d, saved
+
+    other = create(day(-9), first_said)
+    made = create(day(-8), first_said)
+    jid = made.get("id")
+    r.check("first recording", made.status == 201 and made["personal"] == {an: "Bé An hôm nay ăn nửa suất cơm."}, made)
+
+    # Voice 2 corrects voice 1: the earlier statement is replaced, the change is kept as a point to confirm.
+    draft, saved = record(jid, "Cô nhầm, bé An ăn hết suất cơm")
+    fix = next((i for i in draft.get("issues") or [] if i["type"] == "correction"), {})
+    r.check("the correction is recognised", fix.get("previousText") == "Bé An hôm nay ăn nửa suất cơm." and fix.get("text") == "Bé An ăn hết suất cơm."
+            and fix.get("studentIds") == [an] and fix.get("held") is False, draft)
+    r.check("the correction words are not in the note", draft["personal"] == {an: "Bé An ăn hết suất cơm."}, draft)
+    stored = http("GET", f"/journals/{jid}", token=w.T)
+    r.check("stored: only the corrected statement is current", stored["personal"] == {an: "Bé An ăn hết suất cơm."} and stored["status"] == "review", stored)
+    r.check("stored: what was said both times is kept", "nửa suất" in stored["transcript"] and "Cô nhầm" in stored["transcript"], stored["transcript"])
+    kept = next((i for i in stored.get("issues") or [] if i["type"] == "correction"), {})
+    r.check("stored: the replaced statement is kept with the point", kept.get("previousText") == "Bé An hôm nay ăn nửa suất cơm." and kept.get("status") == "open", kept)
+    r.check("the class text is untouched", stored["sections"]["learning"] == made["sections"]["learning"] and stored["sections"]["learning"], stored["sections"])
+    r.check("another day of the same child is untouched", http("GET", f"/journals/{other['id']}", token=w.T).get("personal") == {an: "Bé An hôm nay ăn nửa suất cơm."})
+    r.expect("an unconfirmed correction blocks approval", http("POST", f"/journals/{jid}/approve", token=w.T), 422, "REVIEW_PENDING")
+
+    decide = lambda j, resolution: [{"id": i["id"], "status": "resolved", "resolution": resolution if i["type"] == "correction" else "confirmed"}
+                                    for i in j.get("issues") or [] if i["status"] == "open"]
+    put = lambda j, personal, resolution: http("PUT", f"/journals/{jid}", {"sections": j["sections"], "personal": personal, "photos": [], "issues": decide(j, resolution)}, w.T)
+    r.expect("a correction cannot be assigned like a held name", http("PUT", f"/journals/{jid}", {"sections": stored["sections"], "personal": stored["personal"], "photos": [],
+              "issues": [{"id": kept.get("id"), "status": "resolved", "resolution": "assigned", "assignedTo": [an]}]}, w.T), 400, "VALIDATION_ERROR")
+    put(stored, stored["personal"], "confirmed")
+    http("POST", f"/journals/{jid}/approve", token=w.T)
+    published = http("POST", f"/journals/{jid}/publish", token=w.T)
+    r.check("confirmed and published: the parent sees the corrected statement only", published.status == 200 and as_parent(day(-8)).get("personalNote") == "Bé An ăn hết suất cơm.",
+            as_parent(day(-8)).json)
+    for t in (w.P, w.P2):
+        http("POST", "/notifications/read", {"all": True}, t)
+
+    # A correction of a published journal: back to review; parents keep the published version until it is published again.
+    draft, saved = record(jid, "Cô nhầm rồi, bé An chỉ ăn được một nửa suất cơm")
+    r.check("after publishing: replaced in the draft, back to review", saved.status == 200 and saved["status"] == "review"
+            and saved["personal"] == {an: "Bé An chỉ ăn được một nửa suất cơm."}, saved)
+    r.check("parents still see the published version", as_parent(day(-8)).get("personalNote") == "Bé An ăn hết suất cơm.")
+    # The teacher undoes it: both statements are kept, the point says so.
+    both = "Bé An ăn hết suất cơm. Bé An chỉ ăn được một nửa suất cơm."
+    undone = put(saved, {an: both}, "reverted")
+    reverted = [i for i in undone.get("issues") or [] if i["type"] == "correction" and i["resolution"] == "reverted"]
+    r.check("undoing a correction is recorded", undone.status == 200 and len(reverted) == 1 and reverted[0]["previousText"] == "Bé An ăn hết suất cơm."
+            and undone["personal"] == {an: both}, undone)
+    http("POST", f"/journals/{jid}/approve", token=w.T)
+    http("POST", f"/journals/{jid}/publish", token=w.T)
+    r.check("published again: the parent sees it, only that child's parents are told", as_parent(day(-8)).get("personalNote") == both
+            and titles(w.P) == ["Note about Nguyễn Minh An updated"] and titles(w.P2) == [], {"P": titles(w.P), "P2": titles(w.P2)})
+
+    # The same statement said again is not added twice.
+    _, again = record(jid, "Bé An chỉ ăn được một nửa suất cơm")
+    r.check("a statement said again is not added twice", again.status == 200 and again["personal"] == {an: both}, again)
+
+    # A correction about a child the earlier statement is not about replaces nothing; the teacher is asked.
+    draft, saved = record(jid, "Cô nhầm, bé Ngọc ăn hết suất cơm")
+    unclear = [i for i in draft.get("issues") or [] if i["type"] == "correction"]
+    r.check("another child: nothing replaced, the teacher is asked", len(unclear) == 1 and not unclear[0].get("previousText")
+            and saved["personal"].get(an) == both and saved["personal"].get(ngoc) == "Bé Ngọc ăn hết suất cơm.", saved)
+
+    # New information is not a correction: both are kept.
+    draft, saved = record(jid, "Bé An uống hết sữa")
+    r.check("new information: kept with the rest, no correction", not [i for i in draft.get("issues") or [] if i["type"] == "correction"]
+            and saved["personal"].get(an) == f"{both} Bé An uống hết sữa.", saved)
+
+    for j in (jid, other.get("id")):
+        http("DELETE", f"/admin/class-daily-summaries/{j}", token=w.A)
 
 
 def group_chat(r, w, env):
@@ -759,10 +1030,19 @@ def group_admin(r, w, env):
     failed = http("GET", "/admin/audit-logs?status=Failed", token=w.A)
     r.check("blocked sign-ins are logged as failed", failed.get("total") == 2 and all(a["action"] == "Login" and a["entityName"] == "Authentication" for a in failed["items"]), failed)
     described = [a["description"] for a in http("GET", "/admin/audit-logs?size=100", token=w.A).get("items") or []]
-    wanted = ["Attendance saved: Mặt Trời 1", "Journal published: Mặt Trời 1", "Profile information updated", "Password changed", "Password reset", "Global settings updated"]
+    wanted = ["Attendance saved: Mặt Trời 1", "Journal published: Mặt Trời 1", "Published journal updated: Mặt Trời 1", "Profile information updated", "Password changed", "Password reset", "Global settings updated"]
     r.check("main actions are in the audit log", all(d in described for d in wanted), [d for d in wanted if d not in described])
     summaries = http("GET", "/admin/class-daily-summaries", token=w.A)
     r.check("class journals are visible to the admin", summaries.get("total") == 4, summaries)
+
+
+def group_database(r, w, env):
+    r.start("database", "Unit of work: commit, rollback, journals only in a transaction")
+    result = env.node("scripts/check-unit-of-work.js", check=False)
+    lines = [line for line in result.stdout.splitlines() if line.startswith(("ok", "FAIL"))]
+    r.check("the unit-of-work script ran", result.returncode == 0 or lines, result.stdout + result.stderr)
+    for line in lines:
+        r.check(line[4:].strip().split("  -> ")[0], line.startswith("ok"), line)
 
 
 def group_swagger(r, w, env):
@@ -782,7 +1062,7 @@ def group_swagger(r, w, env):
 
     # Every documented operation must exist on the server: called without a token, a real
     # route answers 401 (or 200/400 when it is open), never "this route does not exist".
-    fake = "64b000000000000000000000"
+    fake = "999999999"
     missing, wrong_guard = [], []
     for method, path, op in operations:
         response = http(method, re.sub(r"\{\w+\}", fake, path), {} if method in ("POST", "PUT", "PATCH") else None)
@@ -797,10 +1077,10 @@ def group_swagger(r, w, env):
     # And the other way round: the routes this script uses must all be documented.
     documented = {(m, re.sub(r"\{\w+\}", "{}", p)) for m, p, _op in operations}
     used = [("GET", "/teacher/class"), ("GET", "/teacher/dashboard"), ("GET", "/attendance"), ("PUT", "/attendance"), ("GET", "/journals"),
-            ("POST", "/journals"), ("POST", "/journals/voice-draft"), ("GET", "/journals/{}"), ("PUT", "/journals/{}"), ("POST", "/journals/{}/approve"),
+            ("POST", "/journals"), ("POST", "/journals/voice-draft"), ("POST", "/journals/transcribe"), ("GET", "/journals/{}"), ("PUT", "/journals/{}"), ("POST", "/journals/{}/approve"),
             ("POST", "/journals/{}/publish"), ("POST", "/journals/{}/recordings"), ("POST", "/uploads"), ("GET", "/conversations"),
             ("GET", "/conversations/unread-count"), ("GET", "/conversations/{}/messages"), ("POST", "/conversations/{}/messages"),
-            ("POST", "/conversations/{}/read"), ("GET", "/notifications"), ("GET", "/notifications/unread-count"), ("POST", "/notifications/read"),
+            ("POST", "/conversations/{}/read"), ("GET", "/parent/journals"), ("GET", "/parent/journals/by-date"), ("GET", "/notifications"), ("GET", "/notifications/unread-count"), ("POST", "/notifications/read"),
             ("POST", "/auth/login"), ("POST", "/auth/refresh"), ("POST", "/auth/logout"), ("POST", "/auth/forgot-password"), ("POST", "/auth/reset-password"),
             ("GET", "/me"), ("PATCH", "/me"), ("PUT", "/me/password"), ("GET", "/settings"), ("PUT", "/settings"), ("GET", "/settings/public"), ("GET", "/health")]
     r.check("every teacher, account and messaging route is documented", all(u in documented for u in used), [u for u in used if u not in documented])
@@ -818,6 +1098,9 @@ def group_swagger(r, w, env):
         "TeacherDashboard": http("GET", "/teacher/dashboard", token=w.T).json,
         "AttendanceSheet": http("GET", f"/attendance?date={TODAY}", token=w.T).json,
         "Journal": http("GET", f"/journals/{w.journal_id}", token=w.T).json,
+        "JournalListItem": (http("GET", "/journals", token=w.T).get("items") or [None])[0],
+        "ParentJournal": w.parent_journal,
+        "ParentJournalListItem": (w.parent_journals or {}).get("items", [None])[0],
         "Settings": http("GET", "/settings", token=w.A).json,
         "StudentRecord": (http("GET", "/admin/students?size=1", token=w.A).get("items") or [None])[0],
         "UserRecord": (http("GET", "/admin/users?size=1", token=w.A).get("items") or [None])[0],
@@ -828,15 +1111,15 @@ def group_swagger(r, w, env):
 
 GROUPS = [
     ("system", group_system), ("auth", group_auth), ("roster", group_roster), ("attendance", group_attendance),
-    ("uploads", group_uploads), ("voice", group_voice), ("journal", group_journal), ("inbox", group_inbox),
-    ("chat", group_chat), ("settings", group_settings), ("account", group_account), ("admin", group_admin),
+    ("uploads", group_uploads), ("voice", group_voice), ("journal", group_journal), ("inbox", group_inbox), ("parent", group_parent), ("corrections", group_corrections),
+    ("chat", group_chat), ("settings", group_settings), ("account", group_account), ("admin", group_admin), ("database", group_database),
     ("swagger", group_swagger),
 ]
 
 # What a group needs to have run before it.
 REQUIRES = {
-    "journal": ["attendance", "uploads", "voice"], "inbox": ["journal"], "chat": ["journal"],
-    "account": ["chat", "settings"], "admin": ["journal", "account"], "swagger": ["journal"],
+    "journal": ["attendance", "uploads", "voice"], "inbox": ["journal"], "parent": ["inbox"], "chat": ["journal"],
+    "account": ["chat", "settings"], "admin": ["parent", "account"], "swagger": ["parent"],
 }
 
 

@@ -8,8 +8,10 @@ import { errorHandler, notFoundHandler } from './middlewares/error.middleware.js
 
 const app = express()
 
-// Browsers may only call the API from these origins (the Vite dev server by default).
-const origins = (process.env.CORS_ORIGIN || 'http://localhost:5173').split(',').map((o) => o.trim())
+// Browsers may only call the API from the origins in CORS_ORIGIN (comma-separated). Without it, any page
+// served from this computer may, whatever its port: Vite moves to 5174, 5175... when 5173 is taken.
+const LOCAL_PAGE = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/
+const origins = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()) : [LOCAL_PAGE]
 
 app.use(cors({ origin: origins }))
 app.use(express.json())

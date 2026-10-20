@@ -126,11 +126,13 @@ def main():
         print(f"         now led by {teacher['fullName']}")
 
     for number, (name, dob, gender, parent_name, relationship) in enumerate(FAMILIES, start=1):
-        student, s_new = api.ensure("students", {"studentCode": f"HS{number:03d}"},
-                                    {"studentCode": f"HS{number:03d}", "fullName": name, "dateOfBirth": dob, "gender": gender, "classId": cls["id"]})
+        # The school's backup already uses HS001..., so the demo class has codes of its own.
+        code = f"MT1-{number:02d}"
+        student, s_new = api.ensure("students", {"studentCode": code},
+                                    {"studentCode": code, "fullName": name, "dateOfBirth": dob, "gender": gender, "classId": cls["id"]})
         phone = f"09040000{number:02d}"
         parent, p_new = api.ensure("users", {"phoneNumber": phone},
-                                   {"username": f"parent{number:02d}", "fullName": parent_name, "phoneNumber": phone, "password": PASSWORD, "role": "PARENT"})
+                                   {"username": f"parent.{phone}", "fullName": parent_name, "phoneNumber": phone, "password": PASSWORD, "role": "PARENT"})
         _link, l_new = api.ensure("parent-student-maps", {"parentId": parent["id"], "studentId": student["id"]},
                                   {"parentId": parent["id"], "studentId": student["id"], "relationship": relationship, "isPrimary": True})
         print(f"student  {name:<18} {new(s_new):<14} parent {parent_name} {phone} ({new(p_new or l_new)})")

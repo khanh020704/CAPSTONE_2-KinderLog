@@ -2,7 +2,7 @@ const notImplemented = (name) => new Error(`${name} is not implemented`)
 
 /**
  * Contract shared by every entity service. Implementations live in ./impl.
- * Methods take request DTOs and return response DTOs, never Mongoose documents.
+ * Methods take request DTOs and return response DTOs, never database rows.
  */
 export default class CrudService {
   /**

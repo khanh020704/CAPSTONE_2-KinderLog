@@ -61,7 +61,13 @@ function NoChild() {
   )
 }
 
-const publishedJournals = (db, classId) => db.journals.filter((j) => j.classId === classId && j.status === 'published').sort((a, b) => b.date.localeCompare(a.date))
+// A journal being changed after publishing is shown as it was published (`live`) until the change is published.
+const publishedJournals = (db, classId) =>
+  db.journals
+    .filter((j) => j.classId === classId)
+    .map((j) => (j.status === 'published' ? j : j.live))
+    .filter(Boolean)
+    .sort((a, b) => b.date.localeCompare(a.date))
 const childRecord = (db, child, date) => attendanceOf(db, child.classId, date)?.records[child.id]
 const ATTENDANCE_TEXT = { present: 'Present today', absent: 'Absent today' }
 

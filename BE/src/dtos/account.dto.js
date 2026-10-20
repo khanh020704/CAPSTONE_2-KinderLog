@@ -8,7 +8,7 @@ export const accountStatus = (user) => (user.isLocked ? 'Locked' : user.isActive
 // The signed-in user as the frontend knows it (Md/API.md, section 3.1).
 // `extra` carries what depends on the role: the teacher's class or the parent's children.
 export const toAccountResponse = (user, extra = {}) => ({
-  id: String(user.id ?? user._id),
+  id: String(user.id),
   role: user.role.toLowerCase(),
   roleLabel: ROLE_LABELS[user.role],
   username: user.username,

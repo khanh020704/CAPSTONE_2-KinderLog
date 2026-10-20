@@ -1,1 +1,7 @@
 __pycache__/
+
+# Database backups and local settings stay on each machine
+BackUp/
+*.bak
+.env
+.env.local

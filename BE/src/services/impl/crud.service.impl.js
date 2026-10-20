@@ -1,58 +1,57 @@
-import mongoose from 'mongoose'
+import { UnitOfWork } from '../../db/unit-of-work.js'
 import { NotFoundError } from '../../utils/errors.js'
 
 const DEFAULT_SIZE = 20
 const MAX_SIZE = 100
 
 /**
- * Mongoose implementation of CrudService, applied on top of an entity's own contract:
+ * SQL Server implementation of CrudService on a table of src/models, applied on top of an entity's own contract:
  *   class StudentServiceImpl extends crudServiceImpl(StudentService) { ... }
+ * Reads use a reading unit of work; every write is one transaction.
  */
 export const crudServiceImpl = (Contract) =>
   class extends Contract {
-    constructor(Model, toResponse) {
+    constructor(table, toResponse) {
       super()
-      this.Model = Model
+      this.table = table
       this.toResponse = toResponse
     }
 
     notFound(id) {
-      return new NotFoundError(`${this.Model.modelName} ${id} was not found.`)
+      return new NotFoundError(`${this.table.name} ${id} was not found.`)
     }
 
-    // Loads the document itself, for implementations that need more than the response DTO.
-    async findDocument(id) {
-      const doc = mongoose.isValidObjectId(id) ? await this.Model.findById(id) : null
-      if (!doc) throw this.notFound(id)
-      return doc
+    // The table's repository in `uow`.
+    repo(uow) {
+      return uow.of(this.table)
     }
 
-    async findAll(filter = {}, { page = 1, size = DEFAULT_SIZE, sort = { _id: -1 } } = {}) {
+    async findAll(filter = {}, { page = 1, size = DEFAULT_SIZE } = {}) {
       page = Math.max(1, Number(page) || 1)
       size = Math.min(MAX_SIZE, Math.max(1, Number(size) || DEFAULT_SIZE))
-      const [docs, total] = await Promise.all([
-        this.Model.find(filter).sort(sort).skip((page - 1) * size).limit(size),
-        this.Model.countDocuments(filter),
-      ])
-      return { items: docs.map(this.toResponse), page, size, total }
+      const repo = this.repo(UnitOfWork.read())
+      const rows = await repo.find(filter, { orderBy: [['id', 'DESC']], limit: size, offset: (page - 1) * size })
+      const total = await repo.count(filter)
+      return { items: rows.map(this.toResponse), page, size, total }
     }
 
     async findById(id) {
-      return this.toResponse(await this.findDocument(id))
+      const row = await this.repo(UnitOfWork.read()).findById(id)
+      if (!row) throw this.notFound(id)
+      return this.toResponse(row)
     }
 
     async create(dto) {
-      return this.toResponse(await this.Model.create(dto))
+      return this.toResponse(await UnitOfWork.run((uow) => this.repo(uow).insert(dto)))
     }
 
     async update(id, dto) {
-      const doc = await this.findDocument(id)
-      doc.set(dto)
-      return this.toResponse(await doc.save())
+      const row = await UnitOfWork.run((uow) => this.repo(uow).updateById(id, dto))
+      if (!row) throw this.notFound(id)
+      return this.toResponse(row)
     }
 
     async remove(id) {
-      const doc = await this.findDocument(id)
-      await doc.deleteOne()
+      if (!(await UnitOfWork.run((uow) => this.repo(uow).removeById(id)))) throw this.notFound(id)
     }
   }

@@ -1,104 +1,75 @@
-// Builds a journal draft from what the teacher said (Md/API2.md, section 7). Two ways in:
-//   - assembleDraft: from structured entries, which the AI extracts from free speech (journal-ai.js)
-//   - draftFromTranscript: a keyword classifier that needs no AI, used when none is configured
-// Either way the result is only ever a draft for the teacher to review.
+// The keyword engine: turns what the teacher said into journal entries without any AI
+// (Md/API2.md, section 7). It is used when no AI provider is configured. Its entries go
+// through the same checks as the AI's (journal-review.js), so a name it cannot verify is
+// held for the teacher instead of being guessed.
 
-export const SECTION_KEYS = ['meal', 'learning', 'sleep', 'health', 'emotion', 'note']
+import { ENTRY_STATUSES, SECTION_KEYS, SECTION_KEYWORDS, joinText } from './journal-constants.js'
+import { assembleDraft, reviewDraft } from './journal-review.js'
+import { CHILD_PREFIXES, findSpokenNames, matchStudentName, normalize } from './vietnamese-names.js'
 
-// Who a statement is about: the whole class, some of it, no child, or children named by the teacher.
-export const ENTRY_STATUSES = ['all', 'part', 'nobody', 'named']
+export { ENTRY_STATUSES, SECTION_KEYS, joinText, assembleDraft }
 
-/**
- * Turns structured entries into the two layers of a journal, in plain code:
- *   - an entry that lists students becomes a private note for each of those children
- *   - every other entry (all, nobody, or an unnamed part of the class) joins its section, shared with every parent
- * Entries about children who are not in the class are dropped rather than guessed at.
- *
- * @param {{ section: string, status: string, students?: string[], text: string }[]} entries
- * @param {{ id: string }[]} students active students of the class
- * @returns {{ sections: Record<string, string>, personal: Record<string, string>, entries: object[] }}
- */
-export function assembleDraft(entries, students) {
-  const inClass = new Set(students.map((student) => student.id))
-  const sections = Object.fromEntries(SECTION_KEYS.map((key) => [key, '']))
-  const personal = {}
-  const kept = []
+// Speech recognition rarely adds punctuation, so a report is also cut where a new subject or
+// topic starts: before a child's name, "cả lớp", "các con", "rồi", "còn", "nhắn", "trừ"...
+const BREAKS = ['cả lớp', 'các con', 'rồi', 'còn', 'sau đó', 'buổi sáng', 'buổi trưa', 'buổi chiều', 'nhắn', 'nhờ', 'trừ', 'riêng', 'không bạn nào', 'không bé nào', 'không con nào']
 
-  for (const entry of entries) {
-    const text = String(entry.text ?? '').trim()
-    if (!text || !SECTION_KEYS.includes(entry.section) || !ENTRY_STATUSES.includes(entry.status)) continue
-    const classWide = entry.status === 'all' || entry.status === 'nobody'
-    const about = classWide ? [] : [...new Set(entry.students || [])].filter((id) => inClass.has(id))
-    // A statement about named children with none of them in the class has nobody to go to.
-    if (entry.status === 'named' && !about.length) continue
-
-    if (about.length) for (const id of about) personal[id] = joinText(personal[id], text)
-    else sections[entry.section] = joinText(sections[entry.section], text)
-    kept.push({ section: entry.section, status: entry.status, students: about, text })
+function cut(sentence, students) {
+  const words = sentence.split(/\s+/).filter(Boolean)
+  const lower = words.map((w) => normalize(w))
+  const starts = new Set([0])
+  for (let i = 1; i < words.length; i++) {
+    const two = `${lower[i]} ${lower[i + 1] ?? ''}`
+    const three = `${two} ${lower[i + 2] ?? ''}`
+    if (BREAKS.includes(lower[i]) || BREAKS.includes(two) || BREAKS.includes(three)) starts.add(i)
+    // "bé An", "bạn Ngọc": a child's name starts a new statement, unless it continues "các bạn".
+    if (CHILD_PREFIXES.includes(lower[i]) && lower[i - 1] !== 'các' && findSpokenNames(`${words[i]} ${words[i + 1] ?? ''}`, students).length) starts.add(i)
   }
-  return { sections, personal, entries: kept }
+  const points = [...starts].sort((a, b) => a - b)
+  const parts = points.map((start, k) => words.slice(start, points[k + 1]))
+  // A piece of one or two words ("Hôm nay", "rồi") is not a statement: it joins the next one.
+  const merged = []
+  for (let k = 0; k < parts.length; k++) {
+    if (parts[k].length < 3 && k + 1 < parts.length) parts[k + 1] = [...parts[k], ...parts[k + 1]]
+    else if (parts[k].length < 3 && merged.length) merged[merged.length - 1].push(...parts[k])
+    else merged.push(parts[k])
+  }
+  return merged.map((part) => part.join(' '))
 }
 
-// Checked in this order; a sentence that matches none goes to `note`.
-const SECTION_KEYWORDS = {
-  sleep: ['ngủ', 'giấc', 'nghỉ trưa'],
-  meal: ['ăn', 'bữa', 'cơm', 'cháo', 'súp', 'canh', 'phở', 'sữa', 'uống'],
-  health: ['sức khỏe', 'sức khoẻ', 'sốt', 'ho', 'ốm', 'mệt', 'đau', 'sổ mũi', 'thuốc'],
-  emotion: ['vui', 'buồn', 'khóc', 'cười', 'hào hứng', 'ngoan', 'hoạt bát', 'thích thú'],
-  learning: ['học', 'vẽ', 'hát', 'kể chuyện', 'chơi', 'hoạt động', 'tập', 'đọc', 'múa', 'tô màu', 'đếm', 'xếp hình'],
-}
-
-const CHILD_PREFIXES = ['bé', 'bạn', 'con', 'em', 'cháu']
-
-export const joinText = (...parts) => parts.filter((p) => p?.trim()).join(' ')
-
-// Which students a sentence is about: by full name, by the last two words of the name ("Minh An"),
-// or by "bé An" when only one child in the class has that given name. "các bạn nam" is not a child called Nam.
-function mentionedStudents(text, students) {
-  const has = (phrase) => text.includes(` ${phrase} `)
-  const hits = new Set()
-  const byGivenName = {}
-  for (const student of students) {
-    const words = student.fullName.normalize('NFC').toLowerCase().split(/\s+/)
-    if (has(words.join(' ')) || has(words.slice(-2).join(' '))) hits.add(student.id)
-    ;(byGivenName[words[words.length - 1]] ||= []).push(student)
-  }
-  for (const [given, list] of Object.entries(byGivenName)) {
-    if (list.length === 1 && CHILD_PREFIXES.some((p) => has(`${p} ${given}`) && !has(`các ${p} ${given}`))) hits.add(list[0].id)
-  }
-  return [...hits]
-}
+const capitalise = (text) => `${text[0].toUpperCase()}${text.slice(1)}${/[.!?]$/.test(text) ? '' : '.'}`
 
 /**
  * @param {string} transcript what the teacher said
- * @param {{ id: string, fullName: string }[]} students active students of the class
- * @returns {{ transcript: string, sections: Record<string, string>, personal: Record<string, string> }}
+ * @param {{ id: string, fullName: string, nickname?: string }[]} students active students of the class
+ * @returns {{ transcript: string, entries: { section, status, text, mentions }[] }}
  */
-export function draftFromTranscript(transcript, students) {
-  const segments = String(transcript)
-    .split(/[.!?\n]+/)
-    .flatMap((part) => (part.trim().split(/\s+/).length > 14 ? part.split(/,\s*/) : [part]))
-    .map((part) => part.trim())
+export function keywordEntries(transcript, students) {
+  const sentences = String(transcript)
+    .split(/[.!?\n;]+/)
+    .map((s) => s.trim())
     .filter(Boolean)
+  const parts = sentences.flatMap((sentence) => cut(sentence, students))
 
-  const buckets = Object.fromEntries(SECTION_KEYS.map((key) => [key, []]))
-  const personal = {}
-  for (const segment of segments) {
-    const text = ` ${segment.normalize('NFC').toLowerCase().replace(/[,;:]/g, ' ').replace(/\s+/g, ' ')} `
-    const sentence = `${segment[0].toUpperCase()}${segment.slice(1)}.`
-    const about = mentionedStudents(text, students)
-    if (about.length) {
-      for (const id of about) personal[id] = joinText(personal[id], sentence)
-      continue
-    }
+  const entries = parts.map((part) => {
+    const text = ` ${normalize(part)} `
     const has = (keyword) => text.includes(` ${keyword} `)
-    const section = Object.keys(SECTION_KEYWORDS).find((key) => SECTION_KEYWORDS[key].some(has)) || 'note'
-    buckets[section].push(sentence)
-  }
+    const section = (has('nhắn') || has('nhờ') ? 'note' : null) || Object.keys(SECTION_KEYWORDS).find((key) => SECTION_KEYWORDS[key].some(has)) || 'note'
+    const mentions = findSpokenNames(part, students).map((spoken) => {
+      const match = matchStudentName(spoken, students)
+      return { spoken, studentId: match.studentId }
+    })
+    const status = mentions.length ? 'named' : /(^| )không (bạn|bé|con|ai) nào /.test(text) ? 'nobody' : has('cả lớp') || has('các con') ? 'all' : 'part'
+    return { section, status, text: capitalise(part), mentions }
+  })
+  return { transcript: sentences.join('. '), entries }
+}
 
-  return {
-    transcript: segments.join('. '),
-    sections: Object.fromEntries(Object.entries(buckets).map(([key, sentences]) => [key, sentences.join(' ')])),
-    personal,
-  }
+/**
+ * The whole keyword path: entries, checks, then the journal layers.
+ * @returns {{ transcript: string, sections: object, personal: object, entries: object[], issues: object[] }}
+ */
+export function draftFromTranscript(transcript, students, existing, attendance) {
+  const { transcript: cleaned, entries } = keywordEntries(transcript, students)
+  const reviewed = reviewDraft({ entries, students, transcript, existing, attendance })
+  return { transcript: cleaned, ...assembleDraft(reviewed.entries, students), issues: reviewed.issues }
 }

@@ -8,6 +8,7 @@ import * as settings from '../controllers/settings.controller.js'
 import * as teacher from '../controllers/teacher.controller.js'
 import * as attendanceSheet from '../controllers/attendance-sheet.controller.js'
 import * as journal from '../controllers/journal.controller.js'
+import * as parentJournal from '../controllers/parent-journal.controller.js'
 import * as conversation from '../controllers/conversation.controller.js'
 import * as inbox from '../controllers/inbox.controller.js'
 import { uploadImage } from '../controllers/upload.controller.js'
@@ -17,6 +18,7 @@ const ADMIN = authorize('ADMIN')
 const TEACHER = authorize('TEACHER')
 const STAFF = authorize('ADMIN', 'TEACHER')
 const CHAT = authorize('TEACHER', 'PARENT')
+const PARENT = authorize('PARENT')
 
 const router = Router()
 
@@ -52,12 +54,17 @@ router.put('/attendance', TEACHER, attendanceSheet.saveSheet)
 
 router.get('/journals', TEACHER, journal.list)
 router.post('/journals', TEACHER, journal.create)
+router.post('/journals/transcribe', TEACHER, audioUpload.single('audio'), journal.transcribe)
 router.post('/journals/voice-draft', TEACHER, audioUpload.single('audio'), journal.voiceDraft)
 router.get('/journals/:id', TEACHER, journal.get)
 router.put('/journals/:id', TEACHER, journal.update)
 router.post('/journals/:id/approve', TEACHER, journal.approve)
 router.post('/journals/:id/publish', TEACHER, journal.publish)
 router.post('/journals/:id/recordings', TEACHER, journal.addRecording)
+
+// ---------- parent (Md/API.md, section 8.4) ----------
+router.get('/parent/journals', PARENT, parentJournal.list)
+router.get('/parent/journals/by-date', PARENT, parentJournal.byDate)
 
 router.post('/uploads', STAFF, imageUpload.single('file'), uploadImage)
 

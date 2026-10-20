@@ -23,10 +23,11 @@ import {
   Square,
   StickyNote,
   Users,
+  TriangleAlert,
 } from 'lucide-react'
 import { attendanceCounts, attendanceOf, byId, classOfTeacher, journalOf, linksOfStudent, studentsOfClass, unreadMessages, useStore } from '../store/store'
 import * as remote from '../store/remote'
-import { JOURNAL_SECTIONS, JOURNAL_STATUS, dayLabel, fmtDate, fmtLongDate, greeting, norm, readFileAsDataURL, relTime, todayISO, uid } from '../lib/utils'
+import { JOURNAL_SECTIONS, JOURNAL_STATUS, dayLabel, fmtDate, fmtLongDate, applyCorrections, greeting, groupIssues, joinNew, norm, readFileAsDataURL, relTime, todayISO, uid } from '../lib/utils'
 import { JournalTimeline, SECTION_ICON } from '../components/Journal'
 import { Avatar, ConfirmDialog, EmptyState, Modal, PageHeader, PhotoTile, SearchInput, SegBar, Select, SkeletonCards, StatCard, StatusBadge, useFakeLoad, useToast } from '../components/ui'
 
@@ -34,6 +35,33 @@ function useMyClass() {
   const { db, user } = useStore()
   const cls = classOfTeacher(db, user.id)
   return { cls, students: cls ? studentsOfClass(db, cls.id).filter((s) => s.status === 'Active') : [] }
+}
+
+// The day the teacher works on, shared by the Dashboard, Attendance and Daily Journal and kept while the
+// teacher moves between pages in this tab: a day picked on one page is the day of the others too.
+// A day remembered from an earlier date is never in the future, so after midnight the pages still open on a valid day.
+const WORKING_DATE_KEY = 'kinderlog.date.teacher'
+
+function useWorkingDate() {
+  const key = WORKING_DATE_KEY
+  const today = todayISO()
+  const [date, setDate] = useState(() => {
+    try {
+      const kept = sessionStorage.getItem(key)
+      return kept && kept <= today ? kept : today
+    } catch {
+      return today
+    }
+  })
+  const choose = (next) => {
+    setDate(next)
+    try {
+      sessionStorage.setItem(key, next)
+    } catch {
+      // storage unavailable: the day is kept until the page is left
+    }
+  }
+  return [date, choose]
 }
 
 function NoClass() {
@@ -52,7 +80,11 @@ export function TeacherDashboard() {
   const { db, user } = useStore()
   const { cls, students } = useMyClass()
   const loading = useFakeLoad()
+  // The dashboard shows the working day: the one picked here, on Attendance or on Daily Journal.
+  const [date, setDate] = useWorkingDate()
   const today = todayISO()
+  const isToday = date === today
+  const when = isToday ? 'today' : `on ${fmtDate(date)}`
   if (!cls)
     return (
       <>
@@ -61,8 +93,8 @@ export function TeacherDashboard() {
       </>
     )
 
-  const att = attendanceCounts(db, cls.id, today)
-  const journal = journalOf(db, cls.id, today)
+  const att = attendanceCounts(db, cls.id, date)
+  const journal = journalOf(db, cls.id, date)
   const pending = db.journals.filter((j) => j.classId === cls.id && j.status === 'review').length
   const unread = unreadMessages(db, user)
 
@@ -73,11 +105,19 @@ export function TeacherDashboard() {
           <h1>
             {greeting()}, {user.name}
           </h1>
-          <p className="muted">{fmtLongDate(today)}</p>
+          <p className="muted">{fmtLongDate(date)}</p>
         </div>
         <div className="hero-class">
           <span className="muted small">Your class</span>
           <strong>{cls.name}</strong>
+          <span className="toolbar">
+            <input type="date" className="date-input" value={date} max={today} onChange={(e) => e.target.value && setDate(e.target.value)} aria-label="Working day" />
+            {!isToday && (
+              <button className="btn btn-sm" onClick={() => setDate(today)}>
+                Today
+              </button>
+            )}
+          </span>
         </div>
       </div>
 
@@ -88,7 +128,7 @@ export function TeacherDashboard() {
           </span>
           <span className="action-text">
             <strong>{journal ? 'Continue Daily Journal' : 'Create Daily Journal'}</strong>
-            <span>{journal ? `Today's journal: ${journalLabel(journal)}` : 'Record with your voice or write it yourself'}</span>
+            <span>{journal ? `${isToday ? "Today's" : `${fmtDate(date)}`} journal: ${journalLabel(journal)}` : 'Record with your voice or write it yourself'}</span>
           </span>
           <ArrowRight size={20} />
         </Link>
@@ -98,7 +138,7 @@ export function TeacherDashboard() {
           </span>
           <span className="action-text">
             <strong>Take Attendance</strong>
-            <span>{att.recorded ? `${att.present} present · ${att.absent} absent` : 'Not recorded yet today'}</span>
+            <span>{att.recorded ? `${att.present} present · ${att.absent} absent` : `Not recorded yet ${when}`}</span>
           </span>
         </Link>
         <Link to="/teacher/messages" className="action-card">
@@ -117,8 +157,8 @@ export function TeacherDashboard() {
       ) : (
         <div className="grid stats">
           <StatCard icon={Users} label="Students" value={students.length} tint="peach" />
-          <StatCard icon={ClipboardCheck} label="Attendance" value={att.recorded ? `${att.present} / ${att.total}` : '—'} hint={att.recorded ? 'present today' : 'not recorded'} tint="mint" />
-          <StatCard icon={BookOpen} label="Journal status" value={journalLabel(journal)} hint="today" tint="cream" />
+          <StatCard icon={ClipboardCheck} label="Attendance" value={att.recorded ? `${att.present} / ${att.total}` : '—'} hint={att.recorded ? `present ${when}` : 'not recorded'} tint="mint" />
+          <StatCard icon={BookOpen} label="Journal status" value={journalLabel(journal)} hint={isToday ? 'today' : fmtDate(date)} tint="cream" />
           <StatCard icon={Sparkles} label="Pending reviews" value={pending} hint="AI drafts to review" tint="lav" />
           <StatCard icon={MessageCircle} label="Unread parent messages" value={unread} tint="sky" />
         </div>
@@ -126,7 +166,7 @@ export function TeacherDashboard() {
 
       <section className="card">
         <div className="card-head">
-          <h2>Today's attendance</h2>
+          <h2>{isToday ? "Today's attendance" : `Attendance · ${fmtDate(date)}`}</h2>
           <Link to="/teacher/attendance">{att.recorded ? 'Edit' : 'Take attendance'}</Link>
         </div>
         <SegBar
@@ -248,7 +288,7 @@ export function AttendancePage() {
   const toast = useToast()
   const { cls, students } = useMyClass()
   const today = todayISO()
-  const [date, setDate] = useState(today)
+  const [date, setDate] = useWorkingDate()
   const [recs, setRecs] = useState({})
   const [noteOpen, setNoteOpen] = useState({})
   const [dirty, setDirty] = useState(false)
@@ -262,6 +302,13 @@ export function AttendancePage() {
     setDirty(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cls?.id, date])
+
+  // Older days arrive from the server in the background, possibly after the day was picked: show the sheet
+  // when it comes, unless the teacher has already started changing this day.
+  useEffect(() => {
+    if (!dirty) setRecs(saved?.records || {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saved?.savedAt])
 
   if (!cls) return <NoClass />
 
@@ -437,13 +484,21 @@ function draftFromTranscript(parts, students) {
   }
 }
 
-const STEPS = ['Record', 'Speech-to-Text', 'AI draft', 'Your review']
+const STEPS = ['Record', 'Speech-to-Text', 'Check the text', 'AI draft']
 const BARS = 28
 
-function Recorder({ students, onDone, onCancel }) {
-  const [phase, setPhase] = useState('idle') // idle → starting → recording ⇄ paused → transcribing → processing | failed
+// With the backend connected the recording itself is sent to the server (Whisper), so the browser's
+// own speech recognition is a fallback and recording works in browsers without it.
+const serverSpeech = () => remote.isActive()
+
+function Recorder({ students, journalId, date, onDone, onCancel }) {
+  // idle → starting → recording ⇄ paused → transcribing → editing → processing | failed
+  // In "editing" the teacher reads what was heard, corrects it in a text box, and presses Enter to make the draft.
+  const [phase, setPhase] = useState('idle')
   const [sec, setSec] = useState(0)
   const [live, setLive] = useState('')
+  const [text, setText] = useState('')
+  const [heardBy, setHeardBy] = useState('')
   const [error, setError] = useState('')
   const session = useRef({ finals: [], interim: '' })
   const wave = useRef(null)
@@ -502,6 +557,12 @@ function Recorder({ students, onDone, onCancel }) {
     rec.start()
   }
 
+  const stopListening = () => {
+    const s = session.current
+    s.listening = false
+    s.recognition?.stop()
+  }
+
   const start = async () => {
     setPhase('starting')
     let stream
@@ -518,7 +579,7 @@ function Recorder({ students, onDone, onCancel }) {
     s.analyser = s.audioCtx.createAnalyser()
     s.analyser.fftSize = 64
     s.audioCtx.createMediaStreamSource(stream).connect(s.analyser)
-    listen()
+    if (SpeechRecognition) listen()
     setSec(0)
     setLive('')
     setPhase('recording')
@@ -526,17 +587,16 @@ function Recorder({ students, onDone, onCancel }) {
 
   const pause = () => {
     const s = session.current
-    s.listening = false
-    s.recognition.stop()
+    stopListening()
     s.recorder.pause()
     setPhase('paused')
   }
   const resume = () => {
     const s = session.current
     s.recorder.resume()
-    s.listening = true
+    s.listening = !!s.recognition
     try {
-      s.recognition.start()
+      s.recognition?.start()
     } catch {
       // still winding down from the pause; onend restarts it
     }
@@ -544,8 +604,7 @@ function Recorder({ students, onDone, onCancel }) {
   }
   const stop = () => {
     const s = session.current
-    s.listening = false
-    s.recognition.stop()
+    stopListening()
     s.recorder.onstop = () => {
       s.audioUrl = URL.createObjectURL(new Blob(s.chunks, { type: s.recorder.mimeType }))
       s.stream.getTracks().forEach((t) => t.stop())
@@ -577,41 +636,85 @@ function Recorder({ students, onDone, onCancel }) {
 
   useEffect(() => {
     if (phase === 'transcribing') {
+      let current = true
       // Give the recogniser a moment to deliver its last result.
       const t = setTimeout(() => {
         const s = session.current
-        if ([...s.finals, s.interim].some(Boolean)) return setPhase('processing')
+        const browserText = [...s.finals, s.interim].filter(Boolean).join('. ')
+        const edit = (heard, by) => {
+          if (!current) return
+          setText(heard)
+          setHeardBy(by)
+          setPhase('editing')
+        }
+        // With the backend connected, the recording goes to the server: Whisper writes the text, knowing the
+        // children's names. The browser's own text is the fallback.
+        if (serverSpeech() && s.chunks.length) {
+          const audio = new Blob(s.chunks, { type: s.recorder.mimeType || 'audio/webm' })
+          remote
+            .transcribe(audio, browserText)
+            .then((heard) => {
+              s.uploadedUrl = heard.audioUrl
+              edit(heard.transcript, heard.transcriptSource)
+            })
+            .catch((err) => (browserText ? edit(browserText, 'browser') : current && fail(err.message)))
+          return
+        }
+        if (browserText) return edit(browserText, 'browser')
         fail(
           s.sttError === 'network'
             ? "We couldn't process the recording. Speech-to-Text needs an internet connection. Please try again."
             : "We couldn't process the recording. No speech was detected. Please try again.",
         )
       }, 1500)
-      return () => clearTimeout(t)
+      return () => {
+        current = false
+        clearTimeout(t)
+      }
     }
     if (phase === 'processing') {
       const s = session.current
-      const parts = [...s.finals, s.interim].filter(Boolean)
-      // With the backend connected, the whole recording goes to its AI, which sorts free speech into the
-      // journal structure. Without it, the keyword rules above are used.
-      if (remote.isActive()) {
+      const said = text.trim()
+      // With the backend connected, the text the teacher confirmed goes to the server: the AI sorts it into the
+      // journal structure, and code checks names, contradictions, health information and attendance.
+      // Without the backend, the keyword rules above are used.
+      if (serverSpeech()) {
         let current = true
         remote
-          .voiceDraft(parts.join('. '))
-          .then(({ transcript, sections, personal }) => current && done.current({ transcript, sections, personal, audioUrl: s.audioUrl }))
+          .voiceDraft(said, s.uploadedUrl, journalId, date)
+          .then(
+            (draft) =>
+              current &&
+              done.current({
+                transcript: draft.transcript,
+                sections: draft.sections,
+                personal: draft.personal,
+                issues: draft.issues || [],
+                audio: draft.audioUrl ? [draft.audioUrl] : [],
+                audioUrl: s.audioUrl,
+              }),
+          )
           .catch((err) => current && fail(err.message))
         return () => {
           current = false
         }
       }
-      const t = setTimeout(() => done.current({ ...draftFromTranscript(parts, students), audioUrl: s.audioUrl }), 900)
+      const t = setTimeout(() => done.current({ ...draftFromTranscript([said], students), audioUrl: s.audioUrl }), 900)
       return () => clearTimeout(t)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
 
-  const supported = !!SpeechRecognition && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined'
-  const stepNow = phase === 'transcribing' ? 1 : phase === 'processing' ? 2 : 0
+  // Enter makes the draft; Shift+Enter starts a new line. While a Vietnamese keyboard is still composing a
+  // letter, Enter belongs to the keyboard.
+  const submitOnEnter = (e) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return
+    e.preventDefault()
+    if (text.trim()) setPhase('processing')
+  }
+
+  const supported = (!!SpeechRecognition || serverSpeech()) && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined'
+  const stepNow = { transcribing: 1, editing: 2, processing: 3 }[phase] ?? 0
   const steps = (
     <div className="steps">
       {STEPS.map((s, i) => (
@@ -668,6 +771,38 @@ function Recorder({ students, onDone, onCancel }) {
         </>
       )}
 
+      {phase === 'editing' && (
+        <>
+          <h2>Check what was heard</h2>
+          <p className="muted">
+            Correct names and words if needed, then press <strong>Enter</strong> to make the draft. Shift+Enter starts a new line.
+            {heardBy === 'browser' && ' (Heard by the browser: check the children’s names carefully.)'}
+          </p>
+          {session.current.audioUrl && <audio className="rec-audio" controls src={session.current.audioUrl} />}
+          <textarea
+            className="rec-text"
+            rows={6}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={submitOnEnter}
+            aria-label="What you said"
+            autoFocus
+          />
+          <div className="rec-controls">
+            <button className="btn btn-primary" onClick={() => setPhase('processing')} disabled={!text.trim()}>
+              <Sparkles size={18} /> Create Draft ⏎
+            </button>
+            <button className="btn" onClick={() => setPhase('idle')}>
+              <Mic size={18} /> Record Again
+            </button>
+            <button className="btn" onClick={onCancel}>
+              Cancel
+            </button>
+          </div>
+          {steps}
+        </>
+      )}
+
       {(phase === 'transcribing' || phase === 'processing') && (
         <>
           <span className="ring" aria-hidden="true" />
@@ -694,6 +829,95 @@ function Recorder({ students, onDone, onCancel }) {
   )
 }
 
+const ISSUE_TITLES = {
+  unknown_student: 'Name not in the class',
+  ambiguous_student: 'Which child?',
+  name_mismatch: 'Name does not match exactly',
+  missing_student: 'No name given',
+  child_named_in_class_text: 'Names a child, but shown to every parent',
+  contradiction: 'Statements disagree',
+  unclear: 'Unclear',
+  health_alert: 'Health information to check',
+  unsupported_content: 'Words the teacher did not say',
+  attendance_mismatch: 'Does not match attendance',
+  correction: 'Corrected by a later recording',
+}
+
+// What the system could not decide on its own. A held statement is not in the journal yet: the teacher puts
+// it in a child's note, keeps it for the whole class, or leaves it out. Other points are confirmed once checked.
+function ReviewIssues({ issues, students, onResolve }) {
+  const [chosen, setChosen] = useState({})
+  const groups = groupIssues(issues)
+  const resolveAll = (group, resolution, childId) => group.forEach((issue) => onResolve(issue, resolution, childId))
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h2>
+          <TriangleAlert size={18} /> Needs your confirmation
+        </h2>
+        <span className="chip">{groups.length} to check</span>
+      </div>
+      <span className="muted small">Nothing below is sent to parents until you decide. KinderLog never guesses a child or diagnoses.</span>
+      {groups.map((group) => {
+        const [issue] = group
+        const options = [...issue.candidates, ...students.map((s) => s.id).filter((id) => !issue.candidates.includes(id))]
+          .map((id) => students.find((s) => s.id === id))
+          .filter(Boolean)
+          .map((s) => ({ value: s.id, label: issue.candidates.includes(s.id) ? `${s.name} (closest match)` : s.name }))
+        const child = chosen[issue.id] ?? issue.candidates[0] ?? ''
+        const several = group.length > 1
+        return (
+          <div key={issue.id} className="j-section">
+            <div className="j-section-head">
+              <span>
+                <strong>{ISSUE_TITLES[issue.type] || 'Check'}</strong>
+                {issue.spokenNames.length > 0 && <span className="chip">heard: {issue.spokenNames.join(', ')}</span>}
+                {several && <span className="chip">{group.length} statements</span>}
+              </span>
+            </div>
+            <span className="block">{issue.message}</span>
+            {issue.previousText ? (
+              <span className="muted block small">
+                Before: <s>“{issue.previousText}”</s>
+                <br />
+                Now: “{issue.text}”
+              </span>
+            ) : (
+              group.map((i) => i.text && <span key={i.id} className="muted block small">“{i.text}”</span>)
+            )}
+            {issue.held ? (
+              <div className="toolbar">
+                <Select value={child} onChange={(v) => setChosen((p) => ({ ...p, [issue.id]: v }))} options={options} placeholder="Choose the child" aria-label="Child" />
+                <button className="btn btn-sm btn-primary" disabled={!child} onClick={() => resolveAll(group, 'assigned', child)}>
+                  {several ? "Add all to this child's note" : "Add to this child's note"}
+                </button>
+                <button className="btn btn-sm" onClick={() => resolveAll(group, 'class')}>
+                  {issue.type === 'child_named_in_class_text' ? 'Keep for the whole class' : 'For the whole class'}
+                </button>
+                <button className="btn btn-sm" onClick={() => resolveAll(group, 'discarded')}>
+                  {several ? 'Leave all out' : 'Leave out'}
+                </button>
+              </div>
+            ) : (
+              <div className="toolbar">
+                <button className="btn btn-sm" onClick={() => resolveAll(group, 'confirmed')}>
+                  <CheckCircle2 size={14} /> I checked this
+                </button>
+                {issue.previousText && (
+                  <button className="btn btn-sm" onClick={() => resolveAll(group, 'reverted')}>
+                    Keep the earlier statement too
+                  </button>
+                )}
+                <span className="muted small">Correct the text in the sections below if needed.</span>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function JournalEditor({ cls, students, journal, audioUrl, onClose }) {
   const { db, upsert, notify, log } = useStore()
   const toast = useToast()
@@ -703,6 +927,8 @@ function JournalEditor({ cls, students, journal, audioUrl, onClose }) {
   const [status, setStatus] = useState(journal.status)
   const [source, setSource] = useState(journal.source)
   const [transcript, setTranscript] = useState(journal.transcript || '')
+  // Points of a voice draft the teacher must confirm before approving (names, contradictions, health).
+  const [issues, setIssues] = useState(journal.issues || [])
   const [audios, setAudios] = useState(audioUrl ? [audioUrl] : [])
   const [dirty, setDirty] = useState(false)
   const [recording, setRecording] = useState(false)
@@ -715,26 +941,34 @@ function JournalEditor({ cls, students, journal, audioUrl, onClose }) {
   const noted = students.filter((s) => s.id in personal)
   const personalCount = noted.filter((s) => personal[s.id].trim()).length
   const filled = filledCount(sections)
+  const openIssues = issues.filter((i) => i.status === 'open')
+  // A note about a child marked absent that day is shown with that, so it can be checked.
+  const dayAttendance = attendanceOf(db, cls.id, journal.date)
+  // Published before: parents see the published version until a change is approved and published again.
+  const wasPublished = !!journal.publishedAt
 
-  // Any change after approval needs the teacher to approve again before publishing.
+  // Any change after approval or publishing needs the teacher to approve again before publishing.
   const touch = () => {
     setDirty(true)
-    if (status === 'approved') setStatus(unapproved)
+    if (status === 'approved' || status === 'published') setStatus(unapproved)
   }
   const build = (st, over = {}) => {
-    const next = { sections, personal, photos, source, transcript, ...over }
+    const next = { sections, personal, photos, source, transcript, issues, ...over }
+    const { live: _live, ...current } = journal
     return {
       ...journal,
       ...next,
       personal: Object.fromEntries(Object.entries(next.personal).filter(([, text]) => text.trim())),
       status: st,
       updatedAt: Date.now(),
-      publishedAt: st === 'published' ? Date.now() : null,
+      publishedAt: journal.publishedAt || (st === 'published' ? Date.now() : null),
+      // Without the backend, the version parents see while a published journal is being changed.
+      live: st === 'published' ? undefined : journal.live || (journal.status === 'published' ? current : undefined),
     }
   }
   const record = (st) => build(st)
-  const persist = (st) => {
-    upsert('journals', record(st))
+  const persist = (st, extra = {}) => {
+    upsert('journals', { ...record(st), ...extra })
     setStatus(st)
     setDirty(false)
   }
@@ -745,15 +979,22 @@ function JournalEditor({ cls, students, journal, audioUrl, onClose }) {
 
   // Another recording adds to the draft instead of replacing it, and always sends it back to review.
   const addRecording = (draft) => {
+    // A statement the new recording corrects is taken out first ("Cô nhầm, bé An ăn hết suất").
+    const kept = applyCorrections({ sections, personal }, draft.issues || [])
     const over = {
-      sections: Object.fromEntries(JOURNAL_SECTIONS.map((s) => [s.key, joinText(sections[s.key], draft.sections[s.key])])),
-      personal: { ...personal, ...Object.fromEntries(Object.entries(draft.personal).map(([id, text]) => [id, joinText(personal[id], text)])) },
+      sections: Object.fromEntries(JOURNAL_SECTIONS.map((s) => [s.key, joinNew(kept.sections[s.key], draft.sections[s.key])])),
+      personal: Object.fromEntries(
+        Object.entries({ ...kept.personal, ...Object.fromEntries(Object.entries(draft.personal).map(([id, text]) => [id, joinNew(kept.personal[id], text)])) }).filter(([, text]) => text.trim()),
+      ),
       transcript: joinText(transcript, draft.transcript),
+      issues: [...issues, ...(draft.issues || [])],
+      audio: [...(journal.audio || []), ...(draft.audio || [])],
       source: 'voice',
     }
     setSections(over.sections)
     setPersonal(over.personal)
     setTranscript(over.transcript)
+    setIssues(over.issues)
     setSource('voice')
     if (draft.audioUrl) setAudios((a) => [...a, draft.audioUrl])
     upsert('journals', build('review', over))
@@ -772,14 +1013,51 @@ function JournalEditor({ cls, students, journal, audioUrl, onClose }) {
     touch()
   }
 
+  // The teacher's decision on one issue. A held statement goes where the teacher says; nothing else changes text.
+  const resolveIssue = (issue, resolution, childId) => {
+    if (resolution === 'assigned') {
+      const children = [...new Set([...(issue.studentIds || []), childId])]
+      setPersonal((p) => ({ ...p, ...Object.fromEntries(children.map((id) => [id, joinText(p[id], issue.text)])) }))
+    }
+    if (resolution === 'class') setSections((p) => ({ ...p, [issue.section]: joinText(p[issue.section], issue.text) }))
+    // Undoing a correction keeps the earlier statement as well, where it was.
+    if (resolution === 'reverted') {
+      const [childId] = issue.studentIds || []
+      if (childId) setPersonal((p) => ({ ...p, [childId]: joinText(issue.previousText, p[childId]) }))
+      else setSections((p) => ({ ...p, [issue.section]: joinText(issue.previousText, p[issue.section]) }))
+    }
+    setIssues((list) => list.map((i) => (i.id === issue.id ? { ...i, status: 'resolved', resolution, assignedTo: resolution === 'assigned' ? [childId] : [] } : i)))
+    touch()
+  }
+
   const approve = () => {
+    if (openIssues.length) return toast(`${openIssues.length} ${openIssues.length === 1 ? 'point still needs' : 'points still need'} your confirmation before approving.`, 'error')
     if (filled === 0 && personalCount === 0) return toast('Add content to at least one section before approving.', 'error')
     persist('approved')
     toast('Journal approved. You can now publish it.')
   }
 
+  // A published change is announced only to the parents it concerns, as the backend does.
+  const publishChanges = () => {
+    const before = journal.live || journal
+    const after = record('published')
+    persist('published', { editedAt: Date.now(), revision: (journal.revision || 1) + 1 })
+    if (JSON.stringify([before.sections, before.photos]) !== JSON.stringify([after.sections, after.photos])) {
+      notify({ role: 'parent', classId: cls.id, type: 'journal', title: 'Journal updated', body: `The teacher updated the journal of ${journal.date} for ${cls.name}.` })
+    }
+    for (const s of students.filter((x) => (before.personal?.[x.id] || '') !== (after.personal[x.id] || ''))) {
+      for (const l of db.links.filter((x) => x.studentId === s.id && x.status === 'Active')) {
+        notify({ role: 'parent', userId: l.parentId, type: 'journal', title: `Note about ${s.name} updated`, body: `The teacher changed the personal note in the journal of ${journal.date}.` })
+      }
+    }
+    log('Update', 'Daily Journal', `Published journal updated: ${cls.name}`)
+    toast('Changes published. Parents now see the updated journal.')
+    onClose()
+  }
+
   const publish = () => {
-    persist('published')
+    if (wasPublished) return publishChanges()
+    persist('published', { revision: 1 })
     notify({ role: 'parent', classId: cls.id, type: 'journal', title: 'New journal published', body: `The daily journal for ${cls.name} is ready to view.` })
     // A note about one child is announced to that child's parents only.
     for (const s of noted.filter((x) => personal[x.id].trim())) {
@@ -813,6 +1091,25 @@ function JournalEditor({ cls, students, journal, audioUrl, onClose }) {
           </span>
         </div>
       )}
+
+      {wasPublished && (
+        <div className="alert alert-info">
+          <Send size={18} />
+          <span>
+            {status === 'published' ? (
+              <>
+                <strong>This journal is published.</strong> You can still change it. Parents keep seeing the published version until you approve and publish your changes.
+              </>
+            ) : (
+              <>
+                <strong>Changed after publishing.</strong> Parents still see the published version. Approve and publish to send them the update.
+              </>
+            )}
+          </span>
+        </div>
+      )}
+
+      {openIssues.length > 0 && <ReviewIssues issues={openIssues} students={students} onResolve={resolveIssue} />}
 
       {db.settings.aiJournal && (
         <div className="card">
@@ -894,6 +1191,7 @@ function JournalEditor({ cls, students, journal, audioUrl, onClose }) {
             <div className="j-section-head">
               <span>
                 <Avatar name={s.name} src={s.photo} size={28} /> <label htmlFor={`p-${s.id}`}>{s.name}</label>
+                {dayAttendance?.records[s.id]?.status === 'absent' && <span className="chip">Absent this day</span>}
               </span>
               <button
                 className="btn btn-sm"
@@ -954,6 +1252,7 @@ function JournalEditor({ cls, students, journal, audioUrl, onClose }) {
         <div className="editor-actions">
           <button
             className="btn"
+            disabled={status === 'published'}
             onClick={() => {
               persist(status === 'approved' ? 'approved' : unapproved)
               toast('Draft saved.')
@@ -964,14 +1263,19 @@ function JournalEditor({ cls, students, journal, audioUrl, onClose }) {
           <button className="btn" onClick={() => setPreview(true)}>
             <Eye size={18} /> Preview
           </button>
-          <button className="btn" onClick={approve} disabled={status === 'approved' && !dirty}>
+          <button className="btn" onClick={approve} disabled={(status === 'approved' && !dirty) || status === 'published' || openIssues.length > 0}>
             <CheckCircle2 size={18} /> {status === 'approved' ? 'Approved' : 'Approve'}
           </button>
           <button className="btn btn-primary" onClick={() => setConfirm(true)} disabled={status !== 'approved'}>
-            <Send size={18} /> Publish
+            <Send size={18} /> {wasPublished ? 'Publish Changes' : 'Publish'}
           </button>
         </div>
-        {status !== 'approved' && <span className="muted small">Approve the journal after reviewing it to enable publishing.</span>}
+        {openIssues.length > 0 ? (
+          <span className="muted small">Confirm the {openIssues.length === 1 ? 'point' : `${openIssues.length} points`} above to enable approving.</span>
+        ) : (
+          status !== 'approved' &&
+          status !== 'published' && <span className="muted small">Approve the journal after reviewing it to enable publishing.</span>
+        )}
       </div>
 
       <Modal open={preview} title="Preview — as parents will see it" onClose={() => setPreview(false)}>
@@ -983,12 +1287,12 @@ function JournalEditor({ cls, students, journal, audioUrl, onClose }) {
       </Modal>
 
       <Modal open={recording} title="Record more" onClose={() => setRecording(false)}>
-        {recording && <Recorder students={students} onDone={addRecording} onCancel={() => setRecording(false)} />}
+        {recording && <Recorder students={students} journalId={journal.id} date={journal.date} onDone={addRecording} onCancel={() => setRecording(false)} />}
       </Modal>
 
       <Modal
         open={confirm}
-        title="Ready to publish this journal to parents?"
+        title={wasPublished ? 'Publish these changes to parents?' : 'Ready to publish this journal to parents?'}
         onClose={() => setConfirm(false)}
         size="sm"
         footer={
@@ -1059,7 +1363,7 @@ export function DailyJournalPage() {
   const toast = useToast()
   const { cls, students } = useMyClass()
   const today = todayISO()
-  const [date, setDate] = useState(today)
+  const [date, setDate] = useWorkingDate()
   const [view, setView] = useState({ mode: 'home' }) // home | record | edit | read
   const [tab, setTab] = useState('all')
   if (!cls) return <NoClass />
@@ -1083,6 +1387,7 @@ export function DailyJournalPage() {
         <PageHeader title="Record with Voice" subtitle={`${cls.name} · ${fmtLongDate(date)}`} />
         <Recorder
           students={students}
+          date={date}
           onCancel={() => setView({ mode: 'home' })}
           onDone={(draft) => {
             create('voice', draft)
@@ -1104,8 +1409,16 @@ export function DailyJournalPage() {
             </button>
           }
           title={`Journal · ${dayLabel(current.date)}`}
-          subtitle={`${cls.name} · published ${relTime(current.publishedAt || current.updatedAt)}`}
-          actions={<StatusBadge status="Published" />}
+          subtitle={`${cls.name} · published ${relTime(current.publishedAt || current.updatedAt)}${current.editedAt ? ` · updated ${relTime(current.editedAt)}` : ''}`}
+          actions={
+            <>
+              <StatusBadge status="Published" />
+              {/* An older journal is still loading its content; it can be edited once it is on screen. */}
+              <button className="btn" onClick={() => setView({ mode: 'edit', id: current.id })} disabled={!!current.stub}>
+                <PenLine size={18} /> Edit Journal
+              </button>
+            </>
+          }
         />
         <div className="card">
           <JournalTimeline journal={current} students={students} />
@@ -1202,6 +1515,7 @@ export function DailyJournalPage() {
                   <td data-label="Class">{cls.name}</td>
                   <td data-label="Status">
                     <StatusBadge status={JOURNAL_STATUS[j.status]} />
+                    {j.publishedAt && j.status !== 'published' && <span className="muted block small">Published before · changes not sent yet</span>}
                   </td>
                   <td data-label="Last edited">{relTime(j.updatedAt)}</td>
                   <td data-label="Actions" className="td-plain" style={{ textAlign: 'right' }}>

@@ -4,6 +4,7 @@ import {
   toCreateJournalDto,
   toJournalListQueryDto,
   toRecordingDto,
+  toTranscribeDto,
   toUpdateJournalDto,
   toVoiceDraftDto,
 } from '../dtos/journal.dto.js'
@@ -36,8 +37,15 @@ export async function addRecording(req, res) {
   res.json(await journalService.addRecording(req.user, req.params.id, toRecordingDto(req.body)))
 }
 
-// Takes multipart/form-data (an `audio` file and a `transcript` field) or JSON with `transcript`.
+// Takes multipart/form-data: the `audio` file, and the browser's `transcript` as a fallback.
+export async function transcribe(req, res) {
+  const audioUrl = req.file ? publicUrl(req, req.file.filename) : undefined
+  res.json(await journalService.transcribe(req.user, toTranscribeDto(req.body, req.file, audioUrl)))
+}
+
+// Takes multipart/form-data (an `audio` file and a `transcript` field) or JSON with `transcript`
+// (and the `audioUrl` of a recording sent before to /journals/transcribe).
 export async function voiceDraft(req, res) {
   const audioUrl = req.file ? publicUrl(req, req.file.filename) : undefined
-  res.json(await journalService.voiceDraft(req.user, toVoiceDraftDto(req.body, audioUrl)))
+  res.json(await journalService.voiceDraft(req.user, toVoiceDraftDto(req.body, req.file, audioUrl)))
 }

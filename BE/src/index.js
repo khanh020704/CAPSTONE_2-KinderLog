@@ -1,7 +1,6 @@
 import app from './app.js'
 import { jwtSecret } from './config/auth.js'
 import { connectDatabase } from './config/database.js'
-import './models/index.js'
 
 const port = process.env.PORT || 3000
 

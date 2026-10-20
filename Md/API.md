@@ -917,9 +917,9 @@ Nhãn trạng thái ở UI: `draft` → Draft, `review` → Needs Review, `appro
 ```
 manual:  (tạo) ──► draft ──────┐
                                ├──► approved ──► published
-voice:   (tạo) ──► review ─────┘
-                     ▲               │
-                     └── sửa nội dung ┘   (sửa sau khi duyệt → quay về draft/review)
+voice:   (tạo) ──► review ─────┘                     │
+                     ▲                               │
+                     └──── sửa nội dung / ghi âm thêm ┘   (cả sau khi duyệt và sau khi xuất bản)
 ```
 
 | Chuyển trạng thái | Điều kiện |
@@ -928,9 +928,9 @@ voice:   (tạo) ──► review ─────┘
 | Tạo → `review` | Từ bản nháp giọng nói |
 | `draft` / `review` → `approved` | Ít nhất một mục `sections` hoặc một ghi chú `personal` có nội dung. Nếu không: 422 — `Add content to at least one section before approving.` |
 | `approved` → `draft` / `review` | Tự động khi nội dung thay đổi sau khi duyệt: về `review` nếu `source = voice`, về `draft` nếu `manual` |
-| Bất kỳ trạng thái chưa publish → `review` | Ghi âm thêm; nội dung mới được **nối vào**, không thay thế |
+| Bất kỳ → `review` | Ghi âm thêm; nội dung mới được **nối vào**, không thay thế |
 | `approved` → `published` | Chỉ từ `approved`. Nếu không: 422 `INVALID_STATE` |
-| `published` | Chỉ đọc. Frontend không có chức năng sửa hay gỡ nhật ký đã publish |
+| `published` → `draft` / `review` | Giáo viên sửa sau khi publish. Phụ huynh vẫn thấy bản đã publish cho tới khi duyệt và publish lại; khi đó chỉ phụ huynh liên quan được thông báo (chi tiết: Md/API2.md, mục 8 "Sửa nhật ký đã xuất bản") |
 
 ### 8.3 Endpoint cho giáo viên
 
@@ -982,7 +982,7 @@ Với `source = voice`, gửi kèm kết quả của `voice-draft`:
 - Khóa của `personal` phải là học sinh `Active` của lớp.
 - Quá `maxPhotos` ảnh: 400.
 - Nhật ký đang `approved` mà nội dung khác bản đã lưu → trạng thái tự về `draft` / `review`. Nội dung không đổi thì giữ `approved`.
-- Nhật ký đã `published`: 422 `INVALID_STATE`.
+- Nhật ký đã `published` vẫn sửa được: trạng thái về `draft` / `review`, phụ huynh thấy thay đổi sau khi publish lại.
 
 #### `POST /journals/{id}/approve` và `POST /journals/{id}/publish`
 
@@ -1053,7 +1053,7 @@ Thân request giống kết quả của `voice-draft`. Server nối từng mục
 **Quy tắc bắt buộc ở server:**
 
 - `studentId` phải có liên kết `Active` với phụ huynh đang gọi, nếu không: 403.
-- Chỉ trả nhật ký `published`.
+- Chỉ trả bản đã publish (`publishedVersion`). Thay đổi giáo viên chưa publish lại không được trả.
 - **Không trả map `personal`.** Chỉ trả `personalNote` là ghi chú của đúng bé được hỏi (chuỗi rỗng nếu không có). Ghi chú về bé khác không bao giờ được rời khỏi server.
 - Không trả `transcript`, `audio`, `source`.
 - `attendance` là bản ghi điểm danh của riêng bé trong ngày đó (`null` nếu chưa điểm danh). UI dùng nó để thêm dòng "Arrival 07:45 — Arrived safely." hoặc "Absent today. {lý do}".

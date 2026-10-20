@@ -141,3 +141,35 @@ export const JOURNAL_SECTIONS = [
 ]
 
 export const JOURNAL_STATUS = { draft: 'Draft', review: 'Needs Review', approved: 'Approved', published: 'Published' }
+
+// Points to confirm about the same spoken name ("Tùng" said in three sentences) are one decision for the teacher:
+// each statement keeps its own point and section, and the teacher's choice is applied to all of them.
+// Statements about an unnamed child stay separate, since each may be about another child.
+const BY_NAME = new Set(['unknown_student', 'ambiguous_student', 'name_mismatch'])
+export function groupIssues(issues) {
+  const groups = new Map()
+  for (const issue of issues) {
+    const named = issue.held && BY_NAME.has(issue.type) && issue.spokenNames?.length
+    const key = named
+      ? [issue.type, norm(issue.message), issue.spokenNames.map(norm).sort().join(','), [...issue.candidates].sort().join(',')].join('|')
+      : issue.id
+    groups.set(key, [...(groups.get(key) || []), issue])
+  }
+  return [...groups.values()]
+}
+
+// A further recording may correct an earlier statement (a point of type `correction` with `previousText`): that
+// statement is taken out of the child's note, or the class section, before the new text is added. The server
+// does the same when the recording is saved.
+const sentencesOf = (text) => String(text ?? '').split(/(?<=[.!?…])\s+/).map((s) => s.trim()).filter(Boolean)
+export const withoutSentence = (text, sentence) => sentencesOf(text).filter((s) => s !== sentence).join(' ')
+export function applyCorrections({ sections, personal }, issues) {
+  const next = { sections: { ...sections }, personal: { ...personal } }
+  for (const fix of issues.filter((i) => i.type === 'correction' && i.previousText)) {
+    const [childId] = fix.studentIds || []
+    if (childId && next.personal[childId] != null) next.personal[childId] = withoutSentence(next.personal[childId], fix.previousText)
+    else if (!childId) next.sections[fix.section] = withoutSentence(next.sections[fix.section], fix.previousText)
+  }
+  return next
+}
+export const joinNew = (old, text) => [old, sentencesOf(text).filter((s) => !sentencesOf(old).includes(s)).join(' ')].filter((p) => p?.trim()).join(' ')

@@ -1,5 +1,4 @@
-import mongoose from 'mongoose'
-import { Class, Message, ParentStudentMap, User } from '../../models/index.js'
+import { UnitOfWork } from '../../db/unit-of-work.js'
 import { toConversationResponse, toMessageResponse } from '../../dtos/conversation.dto.js'
 import { toRelationshipLabel } from '../../dtos/teacher.dto.js'
 import { ForbiddenError } from '../../utils/errors.js'
@@ -16,15 +15,15 @@ const sideOf = (user) =>
     : { mine: 'parentId', theirs: 'teacherId', role: 'PARENT', otherRole: 'TEACHER' }
 
 // A teacher may talk to the parents of the children in their class.
-async function parentsOfTeacher(user) {
-  const cls = await findTeacherClass(user.id)
+async function parentsOfTeacher(uow, user) {
+  const cls = await findTeacherClass(uow, user.id)
   if (!cls) return []
-  const students = await activeStudentsOf(cls._id)
-  const links = await activeParentLinksOf(students.map((s) => s._id))
+  const students = await activeStudentsOf(uow, cls.id)
+  const links = await activeParentLinksOf(uow, students.map((s) => s.id))
   const peers = new Map()
   for (const student of students) {
-    for (const link of links.filter((l) => l.studentId.equals(student._id))) {
-      const id = String(link.parentId)
+    for (const link of links.filter((l) => l.studentId === student.id)) {
+      const id = link.parentId
       if (!peers.has(id)) peers.set(id, { id, name: link.parent.fullName, sub: `${toRelationshipLabel(link.relationship)} of ${student.fullName}` })
     }
   }
@@ -32,23 +31,24 @@ async function parentsOfTeacher(user) {
 }
 
 // A parent may talk to the teachers who lead their children's classes.
-async function teachersOfParent(user) {
-  const links = await ParentStudentMap.find({ parentId: user.id, isActive: true }).populate('student')
-  const classIds = links.filter((l) => l.student?.isActive && l.student.classId).map((l) => l.student.classId)
-  const classes = await Class.find({ _id: { $in: classIds }, isActive: true, teacherId: { $ne: null } })
-  const teachers = await User.find({ _id: { $in: classes.map((c) => c.teacherId) }, isActive: true })
+async function teachersOfParent(uow, user) {
+  const links = await uow.parentLinks.find({ parentId: user.id, isActive: true }, { orderBy: [['id', 'ASC']] })
+  const students = links.length ? await uow.students.find({ id: links.map((l) => l.studentId), isActive: true }) : []
+  const classIds = [...new Set(students.map((s) => s.classId).filter(Boolean))]
+  const classes = classIds.length ? await uow.classes.find({ id: classIds, isActive: true, teacherId: { $ne: null } }, { orderBy: [['id', 'ASC']] }) : []
+  const teachers = classes.length ? await uow.users.find({ id: classes.map((c) => c.teacherId), isActive: true }) : []
   const peers = new Map()
   for (const cls of classes) {
-    const teacher = teachers.find((t) => t._id.equals(cls.teacherId))
+    const teacher = teachers.find((t) => t.id === cls.teacherId)
     if (teacher && !peers.has(teacher.id)) peers.set(teacher.id, { id: teacher.id, name: teacher.fullName, sub: `Teacher · ${cls.className}` })
   }
   return [...peers.values()]
 }
 
-const peersOf = (user) => (user.role === 'TEACHER' ? parentsOfTeacher(user) : teachersOfParent(user))
+const peersOf = (uow, user) => (user.role === 'TEACHER' ? parentsOfTeacher(uow, user) : teachersOfParent(uow, user))
 
-async function requirePeer(user, peerId) {
-  const peer = (await peersOf(user)).find((p) => p.id === peerId)
+async function requirePeer(uow, user, peerId) {
+  const peer = (await peersOf(uow, user)).find((p) => p.id === peerId)
   if (!peer) throw new ForbiddenError('You cannot message this person.')
   const side = sideOf(user)
   return { peer, side, pair: { [side.mine]: user.id, [side.theirs]: peerId } }
@@ -56,21 +56,11 @@ async function requirePeer(user, peerId) {
 
 class ConversationServiceImpl extends ConversationService {
   async list(user, { q } = {}) {
+    const uow = UnitOfWork.read()
     const side = sideOf(user)
-    const peers = await peersOf(user)
-    const me = new mongoose.Types.ObjectId(user.id)
-    const stats = await Message.aggregate([
-      { $match: { [side.mine]: me, [side.theirs]: { $in: peers.map((p) => new mongoose.Types.ObjectId(p.id)) } } },
-      { $sort: { sentAt: 1 } },
-      {
-        $group: {
-          _id: `$${side.theirs}`,
-          last: { $last: '$$ROOT' },
-          unread: { $sum: { $cond: [{ $and: [{ $eq: ['$senderRole', side.otherRole] }, { $eq: ['$isRead', false] }] }, 1, 0] } },
-        },
-      },
-    ])
-    const byPeer = new Map(stats.map((s) => [String(s._id), s]))
+    const peers = await peersOf(uow, user)
+    // Per peer: the newest message and how many of theirs are unread.
+    const byPeer = await uow.messages.conversationsOf(user.id, side, peers.map((p) => p.id))
     const needle = normalize(typeof q === 'string' ? q : '')
 
     const items = peers
@@ -82,26 +72,31 @@ class ConversationServiceImpl extends ConversationService {
 
   async unreadCount(user) {
     const side = sideOf(user)
-    return { count: await Message.countDocuments({ [side.mine]: user.id, senderRole: side.otherRole, isRead: false }) }
+    return { count: await UnitOfWork.read().messages.count({ [side.mine]: user.id, senderRole: side.otherRole, isRead: false }) }
   }
 
   async getMessages(user, peerId, { before, limit }) {
-    const { pair } = await requirePeer(user, peerId)
+    const uow = UnitOfWork.read()
+    const { pair } = await requirePeer(uow, user, peerId)
     const filter = before ? { ...pair, sentAt: { $lt: before } } : pair
-    const newestFirst = await Message.find(filter).sort({ sentAt: -1 }).limit(limit)
+    const newestFirst = await uow.messages.find(filter, { orderBy: [['sentAt', 'DESC'], ['id', 'DESC']], limit })
     return { items: newestFirst.reverse().map(toMessageResponse) }
   }
 
   async send(user, peerId, { text }) {
-    const { pair, side } = await requirePeer(user, peerId)
-    const message = await Message.create({ ...pair, senderRole: side.role, content: text })
+    const message = await UnitOfWork.run(async (uow) => {
+      const { pair, side } = await requirePeer(uow, user, peerId)
+      return uow.messages.insert({ ...pair, senderRole: side.role, content: text })
+    })
     await notifyUsers([peerId], { type: 'MESSAGE', title: `Message from ${user.fullName}`, content: truncate(text, PREVIEW_LENGTH) })
     return toMessageResponse(message)
   }
 
   async markRead(user, peerId) {
-    const { pair, side } = await requirePeer(user, peerId)
-    await Message.updateMany({ ...pair, senderRole: side.otherRole, isRead: false }, { isRead: true, readAt: new Date() })
+    await UnitOfWork.run(async (uow) => {
+      const { pair, side } = await requirePeer(uow, user, peerId)
+      await uow.messages.update({ ...pair, senderRole: side.otherRole, isRead: false }, { isRead: true, readAt: new Date() })
+    })
   }
 }
 

@@ -2088,6 +2088,14 @@ input[type='checkbox'] {
   width: 100%;
   margin-top: 12px;
 }
+/* The text heard from the recording, which the teacher corrects before the draft is made. */
+.rec-text {
+  width: 100%;
+  min-height: 140px;
+  text-align: left;
+  line-height: 1.6;
+  resize: vertical;
+}
 .wave.paused span {
   animation-play-state: paused;
   opacity: 0.45;

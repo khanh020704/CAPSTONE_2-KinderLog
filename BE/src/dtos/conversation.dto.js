@@ -6,7 +6,7 @@ const DEFAULT_LIMIT = 50
 const MAX_LIMIT = 100
 
 export const toMessageResponse = (message) => ({
-  id: String(message._id),
+  id: String(message.id),
   parentId: String(message.parentId),
   teacherId: String(message.teacherId),
   from: message.senderRole.toLowerCase(),
@@ -16,7 +16,7 @@ export const toMessageResponse = (message) => ({
 })
 
 const toLastMessage = (message) =>
-  message ? { id: String(message._id), from: message.senderRole.toLowerCase(), text: message.content, at: toMillis(message.sentAt) } : null
+  message ? { id: String(message.id), from: message.senderRole.toLowerCase(), text: message.content, at: toMillis(message.sentAt) } : null
 
 // `peer` is the other person of the conversation; `sub` says who they are to the reader.
 export const toConversationResponse = (peer, { last, unread } = {}) => ({

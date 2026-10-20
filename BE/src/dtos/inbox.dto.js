@@ -1,4 +1,4 @@
-import mongoose from 'mongoose'
+import { isId } from '../db/table.js'
 import { FieldError } from '../utils/errors.js'
 import { toMillis } from '../utils/text.js'
 
@@ -13,7 +13,7 @@ const TYPE_LABELS = {
 }
 
 export const toInboxItem = (notification) => ({
-  id: String(notification._id),
+  id: String(notification.id),
   type: TYPE_LABELS[notification.type] || 'system',
   title: notification.title,
   body: notification.content || '',
@@ -27,7 +27,7 @@ export const toInboxQueryDto = (query) => ({ unreadOnly: query?.unread === 'true
 export function toMarkReadDto(body) {
   if (body?.all === true) return { all: true }
   const ids = body?.ids
-  if (!Array.isArray(ids) || !ids.length || ids.some((id) => typeof id !== 'string' || !mongoose.isValidObjectId(id))) {
+  if (!Array.isArray(ids) || !ids.length || ids.some((id) => typeof id !== 'string' || !isId(id))) {
     throw new FieldError('ids', 'Send the ids to mark as read, or { "all": true }.')
   }
   return { ids }

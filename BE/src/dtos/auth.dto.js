@@ -4,7 +4,7 @@ import { isEmail } from '../utils/text.js'
 const ROLES = ['admin', 'teacher', 'parent']
 
 // Sign in with a phone number (what the frontend sends) or with a username.
-// Every value must be a plain string: an object here could otherwise be read as a MongoDB query operator.
+// Every value must be a plain string, so a crafted body cannot change what is looked up.
 export function toLoginDto(body) {
   const { phone, username, password, role, remember } = body ?? {}
   const fields = {}

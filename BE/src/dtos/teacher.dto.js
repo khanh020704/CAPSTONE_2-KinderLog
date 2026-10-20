@@ -10,11 +10,11 @@ const RELATIONSHIP_LABELS = {
 
 export const toRelationshipLabel = (relationship) => RELATIONSHIP_LABELS[relationship] || relationship
 
-export const toClassRef = (cls) => (cls ? { id: String(cls._id), name: cls.className } : null)
+export const toClassRef = (cls) => (cls ? { id: String(cls.id), name: cls.className } : null)
 
 // `today` is the child's attendance status for today; `parents` are the active links only.
 export const toRosterStudent = (student, today, parents) => ({
-  id: String(student._id),
+  id: String(student.id),
   name: student.fullName,
   nickname: student.nickname ?? null,
   dob: student.dateOfBirth,
@@ -27,7 +27,7 @@ export const toRosterStudent = (student, today, parents) => ({
 })
 
 export const toRosterParent = (link, parent) => ({
-  id: String(parent._id),
+  id: String(parent.id),
   name: parent.fullName,
   phone: parent.phoneNumber ?? null,
   relationship: toRelationshipLabel(link.relationship),

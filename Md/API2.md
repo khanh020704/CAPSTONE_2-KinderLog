@@ -2,13 +2,13 @@
 
 Tài liệu này lọc từ [API.md](API.md) những API mà vai trò Giáo viên dùng, sắp theo 8 chức năng PB09–PB17 của tài liệu BE Specs.
 
-> **Trạng thái:** đã cài đặt trong `BE/` (Express + MongoDB). Nội dung bám theo hành vi của frontend hiện có (`FE/src/pages/teacher.jsx`, `FE/src/components/Chat.jsx`); những chỗ khác với BE Specs được ghi ở cuối mỗi mục và tổng hợp ở [mục 11](#11-chỗ-lệch-với-be-specs).
+> **Trạng thái:** đã cài đặt trong `BE/` (Express + SQL Server). Nội dung bám theo hành vi của frontend hiện có (`FE/src/pages/teacher.jsx`, `FE/src/components/Chat.jsx`); những chỗ khác với BE Specs được ghi ở cuối mỗi mục và tổng hợp ở [mục 11](#11-chỗ-lệch-với-be-specs).
 >
 > Bản cài đặt khác tài liệu này ở năm điểm:
 >
-> - **ID** là chuỗi ObjectId 24 ký tự của MongoDB (ví dụ `6acb1b2be87b2ff134ec8e2a`), không phải dạng `c1`, `st1` trong các ví dụ.
+> - **ID** là số thứ tự dòng trong SQL Server, gửi dưới dạng chuỗi (ví dụ `"12"`), không phải dạng `c1`, `st1` trong các ví dụ.
 > - **Đăng nhập** nhận `phone` hoặc `username`; `role` là tùy chọn.
-> - **`POST /journals/voice-draft`** cần trường `transcript` (văn bản do trình duyệt nhận dạng). Server chưa có dịch vụ chuyển giọng nói thành văn bản: gửi `audio` mà không có `transcript` sẽ nhận 502 `AI_UNAVAILABLE`. Khi có `GROQ_API_KEY` (hoặc `ANTHROPIC_API_KEY`), một LLM chuyển lời nói tự do thành các mục có cấu trúc `entries` (`section`, `status` = `all` / `part` / `nobody` / `named`, `students`, `text`), rồi code ghép thành `sections` và `personal`; kết quả trả thêm `entries` và `engine`. Không có khóa thì dùng bộ từ khóa (`engine: "keywords"`).
+> - **`POST /journals/voice-draft`** nhận bản ghi âm (`audio`) và/hoặc `transcript`. Khi có `GROQ_API_KEY`, server chuyển giọng nói thành chữ bằng Whisper, có gợi ý tên học sinh của lớp; văn bản của trình duyệt chỉ là dự phòng. LLM chuyển lời nói tự do thành các mục có cấu trúc, rồi code đối chiếu tên với danh sách lớp, tìm mâu thuẫn và thông tin sức khỏe bất thường. Kết quả trả thêm `transcriptSource`, `entries`, `issues` và `engine`. Câu có tên không khớp chính xác, hoặc nói về một bé không rõ tên, bị giữ trong `issues` (`held: true`) và không vào nhật ký cho tới khi giáo viên quyết định; `POST /journals/:id/approve` trả 422 `REVIEW_PENDING` khi còn điểm chưa xác nhận. Không có khóa thì dùng bộ từ khóa (`engine: "keywords"`), vẫn qua cùng bước kiểm tra.
 > - **Điểm danh** nhận thêm `late` và `excused` ngoài `present`, `absent`.
 > - **Tệp tải lên** được phục vụ công khai tại `/uploads/<tên ngẫu nhiên>`, chưa kiểm tra quyền xem. **Email đặt lại mật khẩu** chưa được gửi thật: liên kết được in ra log của server.
 
@@ -227,7 +227,10 @@ Nguyên tắc: **AI gợi ý → giáo viên kiểm tra → giáo viên quyết 
   "transcript": "Hôm nay các con ăn ngon miệng. …",
   "audio": ["https://…/j1-rec1.webm"],
   "updatedAt": 1791600000000,
-  "publishedAt": 1791600000000
+  "publishedAt": 1791600000000,
+  "revision": 1,
+  "editedAt": null,
+  "unpublishedChanges": false
 }
 ```
 
@@ -240,7 +243,10 @@ Nguyên tắc: **AI gợi ý → giáo viên kiểm tra → giáo viên quyết 
 | `personal` | Map `studentId → ghi chú riêng`, **chỉ phụ huynh của bé đó xem được**. Mục rỗng bị loại khi lưu |
 | `photos` | Danh sách URL, tối đa `settings.maxPhotos` (mặc định 6) |
 | `transcript`, `audio` | Văn bản và bản ghi âm gốc; chỉ giáo viên xem |
-| `publishedAt` | `null` cho tới khi xuất bản |
+| `publishedAt` | `null` cho tới khi xuất bản; thời điểm xuất bản **lần đầu** |
+| `revision` | Số lần xuất bản: `0` trước khi xuất bản, `1` sau lần đầu, +1 mỗi lần đăng lại một thay đổi |
+| `editedAt` | Thời điểm đăng lại thay đổi gần nhất; `null` khi phụ huynh vẫn thấy bản đầu tiên |
+| `unpublishedChanges` | `true` khi đã xuất bản rồi bị sửa mà chưa đăng lại: phụ huynh vẫn thấy bản đã xuất bản |
 
 Sáu khóa của `sections`: `meal` (bữa ăn), `learning` (học tập), `sleep` (giấc ngủ), `health` (sức khỏe), `emotion` (cảm xúc), `note` (ghi chú chung cho phụ huynh cả lớp).
 
@@ -249,9 +255,9 @@ Sáu khóa của `sections`: `meal` (bữa ăn), `learning` (học tập), `slee
 ```
 manual:  (tạo) ──► draft ──────┐
                                ├──► approved ──► published
-voice:   (tạo) ──► review ─────┘
-                     ▲               │
-                     └── sửa nội dung ┘
+voice:   (tạo) ──► review ─────┘                     │
+                     ▲                               │
+                     └──── sửa nội dung / ghi âm thêm ┘   (cả sau khi duyệt và sau khi xuất bản)
 ```
 
 | Chuyển trạng thái | Điều kiện |
@@ -260,9 +266,9 @@ voice:   (tạo) ──► review ─────┘
 | Tạo → `review` | Từ bản nháp giọng nói |
 | `draft` / `review` → `approved` | Ít nhất một mục `sections` hoặc một ghi chú `personal` có nội dung |
 | `approved` → `draft` / `review` | Tự động khi nội dung thay đổi sau khi duyệt: về `review` nếu `source = voice`, về `draft` nếu `manual` |
-| Chưa xuất bản → `review` | Ghi âm thêm; nội dung mới được nối vào, không thay thế |
+| Bất kỳ → `review` | Ghi âm thêm; nội dung mới được nối vào, không thay thế |
 | `approved` → `published` | Chỉ từ `approved` |
-| `published` | Chỉ đọc. Frontend không có chức năng sửa hay gỡ |
+| `published` → `draft` / `review` | Khi giáo viên sửa nội dung sau khi xuất bản. Phụ huynh vẫn thấy bản đã xuất bản cho tới khi duyệt và xuất bản lại ([mục 8](#sửa-nhật-ký-đã-xuất-bản)) |
 
 Nhãn hiển thị: `draft` → Draft, `review` → Needs Review, `approved` → Approved, `published` → Published.
 
@@ -311,8 +317,8 @@ Tạo từ giọng nói (`source = voice`) xem [mục 7](#7-pb14--ghi-âm-và-x�
 - **PB12 — trạng thái chung cả lớp:** ghi vào `sections`. Một lần lưu áp dụng cho mọi học sinh của lớp, không cần gửi danh sách ID.
 - **PB13 — ngoại lệ từng học sinh:** ghi vào `personal`. Khóa phải là học sinh `Active` của lớp. Bỏ một khóa khỏi map là xóa ghi chú của bé đó.
 - Nhiều hơn `maxPhotos` ảnh: **400**.
-- Nhật ký đang `approved` mà nội dung khác bản đã lưu → trạng thái tự về `draft` / `review`. Nội dung không đổi thì giữ `approved`.
-- Nhật ký đã `published`: **422** `INVALID_STATE`.
+- Nhật ký đang `approved` hoặc `published` mà nội dung khác bản đã lưu → trạng thái tự về `draft` / `review`. Nội dung không đổi thì giữ nguyên trạng thái.
+- Nhật ký đã `published` vẫn sửa được; phụ huynh chỉ thấy thay đổi sau khi duyệt và xuất bản lại.
 
 **200** trả `Journal` đã cập nhật.
 
@@ -328,6 +334,12 @@ Tạo từ giọng nói (`source = voice`) xem [mục 7](#7-pb14--ghi-âm-và-x�
 ## 7. PB14 — Ghi âm và xử lý AI
 
 Chỉ dùng được khi `settings.aiJournal = true`. Nếu tắt: **403** `AI_DISABLED`, UI hiển thị "AI-assisted drafts are turned off by the system administrator."
+
+### Luồng hai bước trên giao diện
+
+1. `POST /journals/transcribe` (`multipart/form-data`: `audio`, và `transcript` của trình duyệt làm dự phòng) trả `{ transcript, transcriptSource, audioUrl }`. Bản ghi âm được lưu lại; Whisper dùng danh sách tên trong lớp làm gợi ý.
+2. Giao diện hiện `transcript` trong một ô nhập. Giáo viên sửa tên và chữ nếu cần; **Enter** để gửi, **Shift+Enter** để xuống dòng.
+3. `POST /journals/voice-draft` (JSON) với `transcript` là đoạn đã sửa, `audioUrl` lấy từ bước 1, `date` là ngày của nhật ký, và `journalId` khi ghi âm thêm. Server không chuyển giọng nói lần nữa (`transcriptSource = teacher`), mà bóc tách đoạn chữ đã sửa và kiểm tra lại: tên, mâu thuẫn, sức khỏe, đối chiếu điểm danh.
 
 ### `POST /journals/voice-draft` — chuyển bản ghi âm thành bản nháp
 
@@ -399,7 +411,7 @@ Server:
 - thêm `audioUrl` vào `audio`;
 - đặt `source = voice` và `status = review`.
 
-**200** trả `Journal` đã cập nhật. Nhật ký đã `published`: **422** `INVALID_STATE`.
+**200** trả `Journal` đã cập nhật. Với nhật ký đã `published`, phần ghi thêm chỉ tới phụ huynh sau khi duyệt và xuất bản lại.
 
 > **Khác BE Specs:**
 > - BE Specs đặt endpoint là `POST /teacher/ai/process-voice` và nhận `.wav`, `.mp3`, `.m4a`. Trình duyệt ghi âm ra `audio/webm`, nên server cần nhận thêm định dạng này hoặc tự chuyển mã.
@@ -416,7 +428,7 @@ Server:
 | `status` | `draft` \| `review` \| `published`. `review` gồm cả nhật ký đang `approved` (tab "Needs Review") |
 | `date` | Lấy nhật ký của một ngày cụ thể |
 
-Sắp xếp `date` giảm dần. Mỗi phần tử gồm `id`, `date`, `status`, `source`, `updatedAt`.
+Sắp xếp `date` giảm dần. Mỗi phần tử gồm `id`, `date`, `status`, `source`, `updatedAt`, `publishedAt`, `unpublishedChanges`.
 
 ### `GET /journals/{id}`
 
@@ -450,10 +462,12 @@ Không có thân request; frontend lưu nội dung bằng `PUT` trước rồi m
 | HTTP | `code` | `message` |
 | --- | --- | --- |
 | 422 | `INVALID_STATE` | `Add content to at least one section before approving.` |
+| 422 | `REVIEW_PENDING` | Còn điểm cần xác nhận của bản nháp giọng nói |
+| 422 | `INVALID_STATE` | `This journal is already published. Change it first, then approve the changes.` |
 
 ### `POST /journals/{id}/publish` — xuất bản
 
-Không có thân request. **200** trả `Journal` với `status = published`, `publishedAt` là thời điểm xuất bản.
+Không có thân request. **200** trả `Journal` với `status = published`, `publishedAt` là thời điểm xuất bản lần đầu, `revision` tăng 1.
 
 Chỉ xuất bản được từ `approved`; các trạng thái khác: **422** `INVALID_STATE`.
 
@@ -463,11 +477,64 @@ Tác dụng phụ:
 2. Với mỗi bé có ghi chú riêng: thông báo cho từng phụ huynh có liên kết `Active` với bé đó — `A note about {tên bé}` / `The teacher wrote a personal note in today's journal.`
 3. Audit: `Publish` / `Daily Journal` / `Journal published: {lớp}`.
 
+Đăng lại một thay đổi có thông báo và audit riêng, xem bên dưới.
+
+### Sửa nhật ký đã xuất bản
+
+Giáo viên vẫn sửa được nhật ký đã `published` (nút **Edit Journal** ở màn xem nhật ký). Server giữ hai bản:
+
+| Bản | Ai thấy | Lưu ở đâu |
+| --- | --- | --- |
+| Bản làm việc | Giáo viên (`GET /journals/{id}`) | Các cột nội dung của `class_daily_summaries`, `journal_photos` |
+| Bản đã xuất bản | Phụ huynh (`GET /parent/journals…`) | `class_daily_summaries.publishedVersion`, chép lại mỗi lần publish |
+
+1. `PUT /journals/{id}` (hoặc `POST /journals/{id}/recordings`) với nội dung khác → lưu ngay vào cơ sở dữ liệu, `status` về `draft` / `review`, `unpublishedChanges = true`. Nội dung không đổi thì vẫn `published`.
+2. Trong lúc đó phụ huynh **vẫn thấy bản đã xuất bản**, không ai nhận thông báo.
+3. `approve` → `publish` như bình thường. `publishedVersion` được thay bằng nội dung mới, `revision` tăng 1, `editedAt` là thời điểm đăng lại; `publishedAt` giữ thời điểm xuất bản lần đầu.
+4. Cổng phụ huynh nhận bản mới ở lần làm mới kế tiếp (frontend hỏi lại mỗi 10 giây), không cần tải lại trang.
+5. Chỉ báo cho phụ huynh liên quan:
+   - mục chung hoặc ảnh thay đổi → mọi phụ huynh của lớp: `Journal updated` / `The teacher updated the journal of {ngày} for {lớp}.`
+   - ghi chú riêng của bé được thêm, sửa hoặc xóa → chỉ phụ huynh của bé đó: `Note about {tên bé} updated` / `The teacher changed the personal note in the journal of {ngày}.`
+   - không có gì khác so với bản đã xuất bản → không ai nhận thông báo.
+6. Audit: `Update` / `Daily Journal` / `Published journal updated: {lớp}`.
+
+Nhật ký xuất bản trước khi có chức năng này được migration `004-published-version` chép nội dung hiện tại thành bản đã xuất bản (`revision = 1`).
+
+### Phụ huynh xem nhật ký
+
+`role = parent`. `studentId` phải là bé có liên kết `Active` với phụ huynh đang gọi, nếu không: **403** `FORBIDDEN`.
+
+`GET /parent/journals?studentId={id}&month=YYYY-MM` — nhật ký đã xuất bản của lớp bé, `date` giảm dần; `month` tùy chọn.
+
+```json
+{ "items": [{ "id": "j1", "date": "2026-10-10", "publishedAt": 1791600000000, "editedAt": null }] }
+```
+
+`GET /parent/journals/by-date?studentId={id}&date={ngày}` — bản đã xuất bản của một ngày. Không có: **404**.
+
+```json
+{
+  "id": "j1",
+  "date": "2026-10-10",
+  "publishedAt": 1791600000000,
+  "editedAt": 1791610000000,
+  "classId": "c1",
+  "sections": { "meal": "…", "learning": "…", "sleep": "…", "health": "…", "emotion": "…", "note": "…" },
+  "personalNote": "Minh An mạnh dạn giơ tay phát biểu.",
+  "photos": ["https://…/j1-1.jpg"],
+  "attendance": { "status": "present", "note": "" }
+}
+```
+
+- `personalNote` là ghi chú của đúng bé được hỏi (`""` nếu không có). Không trả map `personal`, `transcript`, `audio`, `issues`, `source`.
+- `attendance` là bản ghi điểm danh của riêng bé ngày đó, `null` nếu chưa điểm danh.
+- `editedAt` khác `null` khi giáo viên đã đăng lại một thay đổi.
+
 ### Cổng xuất bản (human-in-the-loop)
 
 Phía server phải bảo đảm, không phụ thuộc vào UI:
 
-- API của phụ huynh chỉ trả nhật ký có `status = published`. Nhật ký `draft`, `review`, `approved` không tồn tại đối với phụ huynh.
+- API của phụ huynh chỉ trả bản đã xuất bản. Nhật ký chưa từng xuất bản không tồn tại đối với phụ huynh; thay đổi chưa đăng lại không được trả.
 - Phụ huynh không bao giờ nhận map `personal`, `transcript`, `audio` hay `source`.
 - Không có đường nào đưa đầu ra AI thẳng tới `published`: bản nháp giọng nói luôn vào `review`, và phải qua `approve`.
 
