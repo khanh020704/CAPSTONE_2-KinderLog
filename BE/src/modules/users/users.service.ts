@@ -10,12 +10,14 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
 import { Brackets, Not, Repository } from 'typeorm';
 import { AuthUser } from '../../common/decorators';
-import { UserRole } from '../../common/enums';
+import { RecordStatus, UserRole } from '../../common/enums';
 import { foldSearch, likeFolded } from '../../common/utils/sql.util';
 import { AccessService } from '../access/access.service';
 import { ClassEntity } from '../classes/entities/class.entity';
 import { DailyJournal } from '../daily-journals/entities/daily-journal.entity';
+import { ClassJournal } from '../daily-journals/entities/class-journal.entity';
 import { JournalPhoto } from '../daily-journals/entities/journal-photo.entity';
+import { Message } from '../messages/entities/message.entity';
 import { ParentStudentMap } from '../students/entities/parent-student-map.entity';
 import {
   CreateUserDto,
@@ -57,7 +59,7 @@ export class UsersService {
     }
     if (user.role === UserRole.PARENT) {
       const links = await this.links.find({
-        where: { parentId: id },
+        where: { parentId: id, status: RecordStatus.ACTIVE },
         relations: { student: { class: true } },
       });
       extra.children = links.map((l) => ({
@@ -151,13 +153,19 @@ export class UsersService {
   async remove(actor: AuthUser, id: string) {
     if (id === actor.id) throw new BadRequestException('You cannot delete your own account');
     await this.findOne(actor, id);
-    // SQL Server allows only one cascade path per table, so the "who did it" references are cleared here
-    // instead of by ON DELETE SET NULL; parent_student_map still cascades.
+    // SQL Server allows only one cascade path per table, so the "who did it" references and the messages are
+    // handled here instead of by ON DELETE rules; parent_student_map and notifications still cascade,
+    // announcements and audit entries keep their rows (author / user → NULL).
     await this.users.manager.transaction(async (tx) => {
       await tx.update(ClassEntity, { homeroomTeacherId: id }, { homeroomTeacherId: null });
       await tx.update(DailyJournal, { createdById: id }, { createdById: null });
       await tx.update(DailyJournal, { approvedById: id }, { approvedById: null });
+      await tx.update(DailyJournal, { publishedById: id }, { publishedById: null });
+      await tx.update(ClassJournal, { createdById: id }, { createdById: null });
+      await tx.update(ClassJournal, { updatedById: id }, { updatedById: null });
       await tx.update(JournalPhoto, { uploadedById: id }, { uploadedById: null });
+      await tx.delete(Message, { senderId: id });
+      await tx.delete(Message, { receiverId: id });
       await tx.delete(User, id);
     });
     return { success: true };

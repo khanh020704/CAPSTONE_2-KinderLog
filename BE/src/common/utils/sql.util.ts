@@ -17,6 +17,9 @@ export const avgSql = (expression: string) => `AVG(CAST(${expression} AS float))
 export const likeFolded = (column: string, param: string) =>
   `REPLACE(${column} COLLATE Latin1_General_100_CI_AI, N'đ', N'd') LIKE :${param} COLLATE Latin1_General_100_CI_AI`;
 
-/** Search term without diacritics, wrapped for LIKE. */
+/**
+ * Search term without diacritics, wrapped for LIKE. LIKE's own wildcards typed by the user (`%`, `_`, `[`) are
+ * escaped as `[%]`, `[_]`, `[[]`, so "50%" or "a_b" match literally instead of matching everything.
+ */
 export const foldSearch = (term: string) =>
-  `%${term.trim().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd')}%`;
+  `%${term.trim().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd').replace(/[[%_]/g, '[$&]')}%`;

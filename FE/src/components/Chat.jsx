@@ -1,85 +1,115 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, MessageCircle, Send } from 'lucide-react'
-import { byId, classOfTeacher, childrenOf, studentsOfClass, useStore } from '../store/store'
-import { dayLabel, fmtTime, norm, relTime, toISO, uid } from '../lib/utils'
-import { Avatar, EmptyState, PageHeader, SearchInput, Skeleton, useFakeLoad, useToast } from './ui'
+import { useStore } from '../store/store'
+import { api } from '../lib/api'
+import { useApi } from '../lib/useApi'
+import { RELATIONSHIP, errorText, label } from '../lib/labels'
+import { roleLabel, toMessage } from '../lib/mappers'
+import { dayLabel, fmtTime, norm, relTime, toISO } from '../lib/utils'
+import { Avatar, EmptyState, PageHeader, SearchInput, Skeleton, useToast } from './ui'
 
-// One conversation per parent–teacher pair. Text only by design: no voice, no AI replies.
-function useConversations() {
-  const { db, user } = useStore()
+// Conversations and the open thread are re-read on these intervals, so messages sent from another device show up.
+const CONTACTS_REFRESH_MS = 10000
+const THREAD_REFRESH_MS = 5000
+const THREAD_SIZE = 100
+// Messaging is for teachers and parents only.
+const CHAT_SUBTITLE = {
+  teacher: 'Conversations with parents of your class',
+  parent: "Chat with your child's teacher",
+}
+
+/** Second line under each contact: who they are to the signed-in user. */
+function useContactContext(user) {
+  const students = useApi(() => (user.role === 'teacher' ? api.students.list() : Promise.resolve([])), [user.role])
   return useMemo(() => {
-    let pairs = []
+    const ctx = {}
     if (user.role === 'teacher') {
-      const cls = classOfTeacher(db, user.id)
-      const seen = new Set()
-      for (const st of cls ? studentsOfClass(db, cls.id) : []) {
-        for (const l of db.links.filter((x) => x.studentId === st.id && x.status === 'Active')) {
-          const p = byId(db.parents, l.parentId)
-          if (!p || seen.has(p.id)) continue
-          seen.add(p.id)
-          pairs.push({ id: p.id, parentId: p.id, teacherId: user.id, name: p.name, sub: `${l.relationship} of ${st.name}` })
-        }
-      }
-    } else {
-      const seen = new Set()
-      for (const child of childrenOf(db, user.id)) {
-        const cls = byId(db.classes, child.classId)
-        const t = cls && byId(db.teachers, cls.teacherId)
-        if (!t || seen.has(t.id)) continue
-        seen.add(t.id)
-        pairs.push({ id: t.id, parentId: user.id, teacherId: t.id, name: t.name, sub: `Teacher · ${cls.name}` })
-      }
+      for (const st of students.data || []) for (const l of st.parentLinks || []) if (l.parent) ctx[l.parent.id] = `${label(RELATIONSHIP, l.relationship)} of ${st.fullName}`
+    } else if (user.role === 'parent') {
+      for (const child of user.api.children || []) if (child.class?.homeroomTeacherId) ctx[child.class.homeroomTeacherId] = `Teacher · ${child.class.name}`
     }
-    const mine = user.role === 'teacher' ? 'teacher' : 'parent'
-    return pairs
-      .map((c) => {
-        const msgs = db.messages.filter((m) => m.parentId === c.parentId && m.teacherId === c.teacherId).sort((a, b) => a.at - b.at)
-        return { ...c, msgs, last: msgs[msgs.length - 1], unread: msgs.filter((m) => m.from !== mine && !m.read).length }
-      })
-      .sort((a, b) => (b.last?.at || 0) - (a.last?.at || 0))
-  }, [db, user])
+    return ctx
+  }, [students.data, user])
+}
+
+// One conversation per person the backend allows (teacher ↔ parents of the class, staff of the school…). Text only.
+function useConversations(user) {
+  const contacts = useApi(() => api.messages.contacts(), [])
+  const context = useContactContext(user)
+  useEffect(() => {
+    const timer = setInterval(contacts.reload, CONTACTS_REFRESH_MS)
+    return () => clearInterval(timer)
+  }, [contacts.reload])
+  const convs = useMemo(
+    () =>
+      (contacts.data || []).map((c) => ({
+        id: c.user.id,
+        name: c.user.fullName,
+        sub: context[c.user.id] || roleLabel(c.user.role),
+        unread: c.unread,
+        canReply: c.canReply,
+        last: c.lastMessage && { text: c.lastMessage.content, at: new Date(c.lastMessage.createdAt).getTime(), mine: c.lastMessage.senderId === user.apiId },
+      })),
+    [contacts.data, context, user.apiId],
+  )
+  return { convs, loading: contacts.initial, reload: contacts.reload }
 }
 
 export default function ChatPage() {
-  const { user, mutate, notify } = useStore()
+  const { user, refreshCounts } = useStore()
   const toast = useToast()
-  const loading = useFakeLoad(400)
-  const convs = useConversations()
+  const { convs, loading, reload } = useConversations(user)
   const [activeId, setActiveId] = useState(null)
   const [q, setQ] = useState('')
   const [text, setText] = useState('')
+  const [sending, setSending] = useState(false)
   const endRef = useRef(null)
-  const mine = user.role === 'teacher' ? 'teacher' : 'parent'
   const wide = typeof window !== 'undefined' && window.matchMedia('(min-width: 860px)').matches
   const active = convs.find((c) => c.id === activeId) || (wide ? convs[0] : null)
 
+  const thread = useApi(() => (active ? api.messages.thread(active.id, { limit: THREAD_SIZE }) : Promise.resolve(undefined)), [active?.id])
+  const msgs = useMemo(() => (thread.data?.items || []).map((m) => toMessage(m, user.apiId)).reverse(), [thread.data, user.apiId])
+
   useEffect(() => {
-    if (!active || active.unread === 0) return
-    mutate((prev) => ({
-      messages: prev.messages.map((m) => (m.parentId === active.parentId && m.teacherId === active.teacherId && m.from !== mine ? { ...m, read: true } : m)),
-    }))
-  }, [active, mine, mutate])
+    if (!active) return
+    const timer = setInterval(thread.reload, THREAD_REFRESH_MS)
+    return () => clearInterval(timer)
+  }, [active, thread.reload])
+
+  // Opening a conversation marks what the other person sent as read (for the badges on every device).
+  const activeUnread = active?.unread || 0
+  const activeKey = active?.id
+  useEffect(() => {
+    if (!activeKey || activeUnread === 0) return
+    api.messages
+      .markRead(activeKey)
+      .then(() => {
+        reload()
+        refreshCounts()
+      })
+      .catch(() => {})
+  }, [activeKey, activeUnread, reload, refreshCounts])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' })
-  }, [active?.id, active?.msgs.length])
+  }, [active?.id, msgs.length])
 
-  const send = (e) => {
+  const send = async (e) => {
     e.preventDefault()
     const body = text.trim()
-    if (!body) return
+    if (!body || sending) return
     if (!navigator.onLine) return toast('Unable to send the message. Please try again.', 'error')
-    mutate((prev) => ({
-      messages: [...prev.messages, { id: uid('m'), parentId: active.parentId, teacherId: active.teacherId, from: mine, text: body, at: Date.now(), read: false }],
-    }))
-    notify({
-      role: mine === 'teacher' ? 'parent' : 'teacher',
-      userId: mine === 'teacher' ? active.parentId : active.teacherId,
-      type: 'message',
-      title: `Message from ${user.name}`,
-      body: body.length > 70 ? `${body.slice(0, 70)}…` : body,
-    })
-    setText('')
+    setSending(true)
+    try {
+      await api.messages.send(active.id, body)
+      setText('')
+      thread.reload()
+      reload()
+    } catch (err) {
+      toast(errorText(err), 'error')
+    } finally {
+      setSending(false)
+    }
   }
 
   const list = convs.filter((c) => norm(`${c.name} ${c.sub}`).includes(norm(q)))
@@ -88,7 +118,7 @@ export default function ChatPage() {
   return (
     <div className={`chat-page ${active ? 'in-conv' : ''}`}>
       <div className="chat-page-head">
-        <PageHeader title="Messages" subtitle={user.role === 'teacher' ? 'Conversations with parents of your class' : "Chat with your child's teacher"} />
+        <PageHeader title="Messages" subtitle={CHAT_SUBTITLE[user.role] || CHAT_SUBTITLE.parent} />
       </div>
       <div className="chat card">
         <aside className="chat-list">
@@ -118,7 +148,7 @@ export default function ChatPage() {
                     {c.last && <span className="chat-time">{relTime(c.last.at)}</span>}
                   </span>
                   <span className="chat-conv-sub">{c.sub}</span>
-                  <span className={`chat-conv-last ${c.unread ? 'unread' : ''}`}>{c.last ? `${c.last.from === mine ? 'You: ' : ''}${c.last.text}` : 'No messages yet'}</span>
+                  <span className={`chat-conv-last ${c.unread ? 'unread' : ''}`}>{c.last ? `${c.last.mine ? 'You: ' : ''}${c.last.text}` : 'No messages yet'}</span>
                 </span>
                 {c.unread > 0 && <span className="count">{c.unread}</span>}
               </button>
@@ -142,15 +172,15 @@ export default function ChatPage() {
                 </div>
               </header>
               <div className="chat-body">
-                {active.msgs.length === 0 && <div className="chat-hint">Say hello to start the conversation.</div>}
-                {active.msgs.map((m) => {
+                {msgs.length === 0 && <div className="chat-hint">Say hello to start the conversation.</div>}
+                {msgs.map((m) => {
                   const day = toISO(new Date(m.at))
                   const sep = day !== lastDay
                   lastDay = day
                   return (
                     <div key={m.id}>
                       {sep && <div className="chat-sep">{dayLabel(day)}</div>}
-                      <div className={`bubble-row ${m.from === mine ? 'me' : ''}`}>
+                      <div className={`bubble-row ${m.mine ? 'me' : ''}`}>
                         <div className="bubble">
                           {m.text}
                           <span className="bubble-time">{fmtTime(m.at)}</span>
@@ -163,7 +193,7 @@ export default function ChatPage() {
               </div>
               <form className="chat-input" onSubmit={send}>
                 <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Type a message" aria-label="Type a message" />
-                <button className="btn btn-primary" disabled={!text.trim()} aria-label="Send message">
+                <button className="btn btn-primary" disabled={!text.trim() || sending} aria-label="Send message">
                   <Send size={18} /> <span className="hide-sm">Send</span>
                 </button>
               </form>

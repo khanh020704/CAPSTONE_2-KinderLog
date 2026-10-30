@@ -1,5 +1,3 @@
-export const uid = (prefix = 'id') => `${prefix}_${Math.random().toString(36).slice(2, 9)}`
-
 const pad = (n) => String(n).padStart(2, '0')
 
 export const toISO = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
@@ -10,10 +8,6 @@ export const addDays = (iso, n) => {
   return toISO(d)
 }
 export const hm = (d = new Date()) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
-export const minToHm = (min) => {
-  const m = Math.max(0, Math.min(23 * 60 + 59, min))
-  return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`
-}
 
 export const fmtDate = (iso) =>
   iso
@@ -83,6 +77,18 @@ export const norm = (s) =>
     .replace(/Đ/g, 'D')
     .toLowerCase()
 
+export const fmtBytes = (n) => {
+  if (n == null) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  let v = n
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i += 1
+  }
+  return `${i ? v.toFixed(1) : v} ${units[i]}`
+}
+
 export const readFileAsDataURL = (file) =>
   new Promise((resolve, reject) => {
     const r = new FileReader()
@@ -90,3 +96,30 @@ export const readFileAsDataURL = (file) =>
     r.onerror = reject
     r.readAsDataURL(file)
   })
+
+// The six sections of a class journal, in the order the teacher fills them in; `time` places a section on the
+// parents' timeline.
+export const JOURNAL_SECTIONS = [
+  { key: 'meal', label: 'Meal', time: '11:30', timeline: 'Lunch' },
+  { key: 'learning', label: 'Learning', time: '09:30', timeline: 'Learning Activity' },
+  { key: 'sleep', label: 'Sleep', time: '13:00', timeline: 'Nap' },
+  { key: 'health', label: 'Health', timeline: 'Health' },
+  { key: 'emotion', label: 'Emotion', timeline: 'Emotion' },
+  { key: 'note', label: 'Special Note', timeline: 'Note from the teacher' },
+]
+
+export const JOURNAL_STATUS = { draft: 'Draft', review: 'Needs Review', approved: 'Approved', published: 'Published' }
+
+// Points to confirm about the same spoken name ("Tùng" said in three sentences) are one decision for the teacher:
+// each statement keeps its own point and section, and the teacher's choice is applied to all of them.
+// Statements about an unnamed child stay separate, since each may be about another child.
+const BY_NAME = new Set(['unknown_student', 'ambiguous_student', 'name_mismatch'])
+export function groupIssues(issues) {
+  const groups = new Map()
+  for (const issue of issues) {
+    const named = issue.held && BY_NAME.has(issue.type) && issue.spokenNames?.length
+    const key = named ? [issue.type, norm(issue.message), issue.spokenNames.map(norm).sort().join(','), [...issue.candidates].sort().join(',')].join('|') : issue.id
+    groups.set(key, [...(groups.get(key) || []), issue])
+  }
+  return [...groups.values()]
+}

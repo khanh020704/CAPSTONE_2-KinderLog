@@ -44,6 +44,7 @@ export class DailyJournal extends BaseEntity {
   @Column({ type: 'simple-enum', enum: AttendanceStatus, default: AttendanceStatus.PRESENT })
   attendance: AttendanceStatus;
 
+  /** The attendance note: the reason when absent, or a note such as "arrived late" when present. */
   @Column({ name: 'absence_reason', type: 'nvarchar', length: 255, nullable: true })
   absenceReason: string | null;
 
@@ -109,6 +110,19 @@ export class DailyJournal extends BaseEntity {
 
   @Column({ name: 'approved_at', type: 'datetime2', nullable: true })
   approvedAt: Date | null;
+
+  @Column({ name: 'submitted_at', type: 'datetime2', nullable: true })
+  submittedAt: Date | null;
+
+  @Column({ name: 'published_by_id', type: 'uniqueidentifier', nullable: true })
+  publishedById: string | null;
+
+  @ManyToOne('User', { onDelete: 'NO ACTION', nullable: true })
+  @JoinColumn({ name: 'published_by_id' })
+  publishedBy: User | null;
+
+  @Column({ name: 'published_at', type: 'datetime2', nullable: true })
+  publishedAt: Date | null;
 
   @OneToMany('JournalPhoto', (p: JournalPhoto) => p.journal)
   photos: JournalPhoto[];

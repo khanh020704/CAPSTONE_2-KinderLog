@@ -24,10 +24,23 @@ export enum Relationship {
   GUARDIAN = 'GUARDIAN',
 }
 
-/** AI output and teacher edits are always DRAFT; only APPROVED entries reach parents. */
+/**
+ * DRAFT (teacher writing) → PENDING (sent to the principal) → APPROVED (principal checked it) → PUBLISHED (parents
+ * can see it). Editing never moves an entry backwards: corrections to a published entry reach parents at once.
+ */
 export enum JournalStatus {
   DRAFT = 'DRAFT',
+  PENDING = 'PENDING',
   APPROVED = 'APPROVED',
+  PUBLISHED = 'PUBLISHED',
+}
+
+/** A class journal: written by hand (DRAFT) or made from a recording (REVIEW) → APPROVED → PUBLISHED. */
+export enum ClassJournalStatus {
+  DRAFT = 'DRAFT',
+  REVIEW = 'REVIEW',
+  APPROVED = 'APPROVED',
+  PUBLISHED = 'PUBLISHED',
 }
 
 export enum JournalSource {
@@ -68,4 +81,60 @@ export enum Mood {
   CALM = 'CALM',
   TIRED = 'TIRED',
   SAD = 'SAD',
+}
+
+/** At most one ACTIVE (current) academic year per school; the service deactivates the previous one. */
+export enum AcademicYearStatus {
+  ACTIVE = 'ACTIVE',
+  INACTIVE = 'INACTIVE',
+}
+
+export enum AnnouncementStatus {
+  DRAFT = 'DRAFT',
+  PUBLISHED = 'PUBLISHED',
+}
+
+export enum AnnouncementAudience {
+  ALL = 'ALL',
+  TEACHERS = 'TEACHERS',
+  PARENTS = 'PARENTS',
+}
+
+export enum AnnouncementCategory {
+  HOLIDAY = 'HOLIDAY',
+  ACTIVITY = 'ACTIVITY',
+  NOTICE = 'NOTICE',
+  REMINDER = 'REMINDER',
+}
+
+export enum NotificationType {
+  JOURNAL = 'JOURNAL',
+  MESSAGE = 'MESSAGE',
+  ANNOUNCEMENT = 'ANNOUNCEMENT',
+  CAMERA = 'CAMERA',
+  SYSTEM = 'SYSTEM',
+}
+
+/** Every action the audit interceptor records (the Action filter of the audit log screen). */
+export enum AuditAction {
+  LOGIN = 'LOGIN',
+  CREATE = 'CREATE',
+  UPDATE = 'UPDATE',
+  DELETE = 'DELETE',
+  STATUS = 'STATUS',
+  SUBMIT = 'SUBMIT',
+  APPROVE = 'APPROVE',
+  PUBLISH = 'PUBLISH',
+  BULK_SAVE = 'BULK_SAVE',
+  UPLOAD = 'UPLOAD',
+  RESET_PASSWORD = 'RESET_PASSWORD',
+  CHANGE_PASSWORD = 'CHANGE_PASSWORD',
+  LINK = 'LINK',
+  UNLINK = 'UNLINK',
+  AI_DRAFT = 'AI_DRAFT',
+}
+
+export enum AuditStatus {
+  SUCCESS = 'SUCCESS',
+  FAILED = 'FAILED',
 }

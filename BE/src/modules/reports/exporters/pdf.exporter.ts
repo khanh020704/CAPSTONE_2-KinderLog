@@ -64,7 +64,8 @@ export function toPdf(report: ReportTable): Promise<Buffer> {
     report.rows.forEach((row, r) =>
       drawRow(
         report.columns.map((c) => {
-          const v = row[c.key];
+          const raw = row[c.key];
+          const v = c.labels && typeof raw === 'string' ? (c.labels[raw] ?? raw) : raw;
           if (v == null || v === '') return '—';
           return c.format === 'percent' ? `${v}%` : String(v);
         }),

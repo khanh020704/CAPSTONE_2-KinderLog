@@ -8,18 +8,10 @@ export const STATUS_KEY = invert(STATUS)
 export const GENDER = { MALE: 'Male', FEMALE: 'Female' }
 export const RELATIONSHIP = { MOTHER: 'Mother', FATHER: 'Father', GRANDMOTHER: 'Grandmother', GRANDFATHER: 'Grandfather', GUARDIAN: 'Guardian' }
 
-export const MEAL = { ALL: 'Ate everything', MOST: 'Ate most of it', HALF: 'Ate about half', LITTLE: 'Ate a little', NONE: 'Did not eat' }
-export const SLEEP = { GOOD: 'Slept well', FAIR: 'Slept okay', POOR: 'Restless sleep', NONE: 'Did not sleep' }
 export const HEALTH = { NORMAL: 'Normal', MONITOR: 'Needs monitoring', SICK: 'Unwell' }
-export const MOOD = { HAPPY: 'Happy', CALM: 'Calm', TIRED: 'Tired', SAD: 'Upset' }
-export const JOURNAL_STATE = { DRAFT: 'Draft', APPROVED: 'Approved' }
 
 export const GENDER_OPTIONS = options(GENDER)
 export const RELATIONSHIP_OPTIONS = options(RELATIONSHIP)
-export const MEAL_OPTIONS = options(MEAL)
-export const SLEEP_OPTIONS = options(SLEEP)
-export const HEALTH_OPTIONS = options(HEALTH)
-export const MOOD_OPTIONS = options(MOOD)
 
 export const label = (map, v) => (v ? map[v] || v : '')
 

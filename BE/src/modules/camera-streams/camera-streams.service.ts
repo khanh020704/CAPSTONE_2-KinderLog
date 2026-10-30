@@ -1,12 +1,13 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { AuthUser } from '../../common/decorators';
 import { UserRole } from '../../common/enums';
 import { timeToMinutes } from '../../common/utils/date.util';
 import { AccessService } from '../access/access.service';
 import { ClassEntity } from '../classes/entities/class.entity';
+import { User } from '../users/entities/user.entity';
 import { availability } from './camera-schedule';
 import {
   CreateCameraStreamDto,
@@ -23,10 +24,21 @@ export class CameraStreamsService {
   constructor(
     @InjectRepository(CameraStream) private readonly cameras: Repository<CameraStream>,
     @InjectRepository(ClassEntity) private readonly classes: Repository<ClassEntity>,
+    @InjectRepository(User) private readonly users: Repository<User>,
     private readonly access: AccessService,
     config: ConfigService,
   ) {
     this.tz = config.get<string>('timezone')!;
+  }
+
+  /** A parent whose camera access the school turned off may not watch at all. */
+  private async assertCameraAccess(user: AuthUser) {
+    if (user.role !== UserRole.PARENT) return;
+    const account = await this.users.findOne({
+      where: { id: user.id },
+      select: { id: true, cameraAccess: true },
+    });
+    if (!account?.cameraAccess) throw new ForbiddenException('Camera access is turned off for this account');
   }
 
   /** Staff view: every camera of the school (or teacher's class) with its live state and URL. */
@@ -52,6 +64,7 @@ export class CameraStreamsService {
    * outside it the parent gets the state and the next window, so the FE can show "Opens at 08:00".
    */
   async watch(user: AuthUser, q: WatchQueryDto) {
+    await this.assertCameraAccess(user);
     let classId = q.classId;
     if (q.studentId) classId = (await this.access.assertStudent(user, q.studentId)).classId;
     if (!classId) throw new BadRequestException('studentId or classId is required');
@@ -78,6 +91,7 @@ export class CameraStreamsService {
 
   /** Single camera, same window rule; 403 for a parent outside the window. */
   async watchOne(user: AuthUser, id: string) {
+    await this.assertCameraAccess(user);
     const cam = await this.findOne(user, id);
     const a = availability(cam, this.tz);
     if (user.role === UserRole.PARENT && a.state !== 'LIVE') {
@@ -115,11 +129,6 @@ export class CameraStreamsService {
     await this.findOne(user, id);
     await this.cameras.delete(id);
     return { success: true };
-  }
-
-  /** Cameras of a set of classes – used by the dashboard. */
-  countByClasses(classIds: string[]) {
-    return classIds.length ? this.cameras.count({ where: { classId: In(classIds) } }) : Promise.resolve(0);
   }
 
   private assertWindow(start: string, end: string) {

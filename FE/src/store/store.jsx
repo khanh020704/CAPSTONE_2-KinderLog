@@ -1,29 +1,42 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { seed } from './seed'
-import { todayISO, uid } from '../lib/utils'
+import { LOCAL_DATA_VERSION, emptyLocalData } from './localData'
 import { FE_ROLE, api, getToken, setToken } from '../lib/api'
 import { STATUS, errorText } from '../lib/labels'
 
 const DB_KEY = 'kinderlog.db'
 const SESSION_KEY = 'kinderlog.session'
-export const DEMO_PASSWORD = '123456'
+// Initial password of accounts created or reset by an admin / principal: must match DEFAULT_PASSWORD of the backend.
+export const INITIAL_PASSWORD = import.meta.env.VITE_INITIAL_PASSWORD || '123456'
 
 export const ROLES = {
-  admin: { label: 'System Admin', coll: 'admins', home: '/admin' },
-  principal: { label: 'Principal', coll: 'principals', home: '/principal' },
-  teacher: { label: 'Teacher', coll: 'teachers', home: '/teacher' },
-  parent: { label: 'Parent', coll: 'parents', home: '/parent' },
+  admin: { label: 'System Admin', home: '/admin' },
+  principal: { label: 'Principal', home: '/principal' },
+  teacher: { label: 'Teacher', home: '/teacher' },
+  parent: { label: 'Parent', home: '/parent' },
 }
 
-// Demo data is anchored to "today" (camera windows, attendance), so it is rebuilt when the day changes.
+// Unread messages / notifications for the menu badges: refreshed on this interval, on focus, and after reading.
+const COUNTS_REFRESH_MS = 30000
+const INBOX_ROLES = ['teacher', 'parent']
+
+// Browser-only settings survive reloads; data saved by an older version of the app is replaced.
 function loadDb() {
   try {
     const saved = JSON.parse(localStorage.getItem(DB_KEY))
-    const fresh = seed()
-    if (saved && saved.version === fresh.version && saved.seededOn === todayISO()) return saved
-    return { ...fresh, seededOn: todayISO() }
+    if (saved && saved.version === LOCAL_DATA_VERSION) return { ...emptyLocalData(), ...saved }
   } catch {
-    return { ...seed(), seededOn: todayISO() }
+    // unreadable: start empty
+  }
+  return emptyLocalData()
+}
+
+// A token that is unreadable or past its `exp` is dropped here, without asking the backend (no 401 on reload).
+function tokenAlive(token) {
+  try {
+    const { exp } = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+    return !exp || exp * 1000 > Date.now()
+  } catch {
+    return false
   }
 }
 
@@ -31,7 +44,13 @@ function loadDb() {
 function loadSession() {
   try {
     const s = JSON.parse(sessionStorage.getItem(SESSION_KEY) || localStorage.getItem(SESSION_KEY))
-    return s?.profile && getToken() ? s : null
+    const token = getToken()
+    if (token && !tokenAlive(token)) {
+      setToken(null)
+      saveSession(null)
+      return null
+    }
+    return s?.profile && token ? s : null
   } catch {
     return null
   }
@@ -49,12 +68,13 @@ export function StoreProvider({ children }) {
   const [db, setDb] = useState(loadDb)
   const [session, setSession] = useState(loadSession)
   const [checking, setChecking] = useState(() => !!loadSession())
+  const [counts, setCounts] = useState({ messages: 0, notifications: 0 })
 
   useEffect(() => {
     try {
       localStorage.setItem(DB_KEY, JSON.stringify(db))
     } catch {
-      // storage full (large photos) or unavailable: the demo keeps working in memory
+      // storage full or unavailable: the app keeps working in memory
     }
   }, [db])
 
@@ -90,16 +110,37 @@ export function StoreProvider({ children }) {
     return () => window.removeEventListener('kinderlog:unauthorized', onUnauthorized)
   }, [])
 
-  // The signed-in user comes from the backend. Features the backend does not cover yet (messages, notifications,
-  // announcements, audit log) still use the local demo data, matched to the same account by phone number.
+  const refreshCounts = useCallback(() => {
+    if (!getToken()) return
+    Promise.all([api.messages.unreadCount(), api.notifications.unreadCount()])
+      .then(([m, n]) => setCounts({ messages: m?.unread ?? 0, notifications: n?.unread ?? 0 }))
+      .catch(() => setCounts({ messages: 0, notifications: 0 })) // badges are best effort
+  }, [])
+
+  // Counted only once a remembered token has been re-validated, so an expired session never asks for them; the
+  // principal and the system admin have no messages or notification inbox.
+  const signedIn = !!session && !checking && INBOX_ROLES.includes(session.role)
+  useEffect(() => {
+    if (!signedIn) {
+      setCounts({ messages: 0, notifications: 0 })
+      return
+    }
+    refreshCounts()
+    const timer = setInterval(refreshCounts, COUNTS_REFRESH_MS)
+    window.addEventListener('focus', refreshCounts)
+    return () => {
+      clearInterval(timer)
+      window.removeEventListener('focus', refreshCounts)
+    }
+  }, [signedIn, refreshCounts])
+
+  // The signed-in user is the backend profile, in the shape the screens use.
   const user = useMemo(() => {
     if (!session) return null
     const p = session.profile
     const meta = ROLES[session.role]
-    const local = db[meta.coll].find((u) => u.phone === p.phone)
     return {
-      ...(local || {}),
-      id: local?.id ?? p.id,
+      id: p.id,
       apiId: p.id,
       api: p,
       name: p.fullName,
@@ -108,36 +149,14 @@ export function StoreProvider({ children }) {
       address: p.address || '',
       status: STATUS[p.status] || p.status,
       schoolId: p.schoolId,
+      cameraAccess: p.cameraAccess !== false,
       lastLogin: p.lastLoginAt ? new Date(p.lastLoginAt).getTime() : null,
       role: session.role,
       roleLabel: meta.label,
     }
-  }, [db, session])
+  }, [session])
 
   const mutate = useCallback((fn) => setDb((prev) => ({ ...prev, ...fn(prev) })), [])
-
-  const log = useCallback(
-    (action, module, description, status = 'Success', actor) => {
-      const who = actor || user
-      setDb((prev) => ({
-        ...prev,
-        audit: [{ id: uid('au'), at: Date.now(), user: who?.name || 'Unknown', role: who?.roleLabel || '—', action, module, description, status }, ...prev.audit],
-      }))
-    },
-    [user],
-  )
-
-  const upsert = useCallback(
-    (coll, item) =>
-      mutate((prev) => ({
-        [coll]: prev[coll].some((x) => x.id === item.id) ? prev[coll].map((x) => (x.id === item.id ? { ...x, ...item } : x)) : [item, ...prev[coll]],
-      })),
-    [mutate],
-  )
-
-  const remove = useCallback((coll, id) => mutate((prev) => ({ [coll]: prev[coll].filter((x) => x.id !== id) })), [mutate])
-
-  const notify = useCallback((n) => mutate((prev) => ({ notifications: [{ id: uid('n'), at: Date.now(), readBy: [], userId: null, ...n }, ...prev.notifications] })), [mutate])
 
   const login = useCallback(async (role, phone, password, remember) => {
     try {
@@ -169,39 +188,11 @@ export function StoreProvider({ children }) {
     [],
   )
 
-  const resetDemo = useCallback(() => setDb({ ...seed(), seededOn: todayISO() }), [])
-
   const value = useMemo(
-    () => ({ db, user, checking, mutate, upsert, remove, log, notify, login, logout, setProfile, resetDemo }),
-    [db, user, checking, mutate, upsert, remove, log, notify, login, logout, setProfile, resetDemo],
+    () => ({ db, user, checking, counts, refreshCounts, mutate, login, logout, setProfile }),
+    [db, user, checking, counts, refreshCounts, mutate, login, logout, setProfile],
   )
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
 }
 
 export const useStore = () => useContext(StoreContext)
-
-// ---- selectors ----
-
-export const byId = (list, id) => list.find((x) => x.id === id)
-export const classOfTeacher = (db, teacherId) => db.classes.find((c) => c.teacherId === teacherId)
-export const studentsOfClass = (db, classId) => db.students.filter((s) => s.classId === classId)
-export const childrenOf = (db, parentId) =>
-  db.links
-    .filter((l) => l.parentId === parentId && l.status === 'Active')
-    .map((l) => ({ ...byId(db.students, l.studentId), relationship: l.relationship }))
-    .filter((s) => s.id)
-
-export function notificationsFor(db, user) {
-  if (!user) return []
-  const classIds = user.role === 'parent' ? childrenOf(db, user.id).map((c) => c.classId) : user.role === 'teacher' ? [classOfTeacher(db, user.id)?.id] : []
-  return db.notifications.filter((n) => n.role === user.role && (!n.userId || n.userId === user.id) && (!n.classId || classIds.includes(n.classId))).sort((a, b) => b.at - a.at)
-}
-
-export const unreadNotifications = (db, user) => notificationsFor(db, user).filter((n) => !n.readBy.includes(user.id)).length
-
-export function unreadMessages(db, user) {
-  if (!user) return 0
-  if (user.role === 'teacher') return db.messages.filter((m) => m.teacherId === user.id && m.from === 'parent' && !m.read).length
-  if (user.role === 'parent') return db.messages.filter((m) => m.parentId === user.id && m.from === 'teacher' && !m.read).length
-  return 0
-}

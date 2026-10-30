@@ -1,5 +1,16 @@
 import { PartialType, PickType } from '@nestjs/swagger';
-import { IsEmail, IsEnum, IsOptional, IsString, IsUUID, Length, Matches, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsEnum,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Length,
+  Matches,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 import { RecordStatus, UserRole } from '../../../common/enums';
 
 export class CreateUserDto {
@@ -27,6 +38,11 @@ export class CreateUserDto {
   @Length(0, 255)
   address?: string;
 
+  /** Parents: classroom camera allowed during its scheduled times (default true). */
+  @IsOptional()
+  @IsBoolean()
+  cameraAccess?: boolean;
+
   /** Defaults to DEFAULT_PASSWORD (the FE shows it as the initial password). */
   @IsOptional()
   @IsString()
@@ -35,7 +51,7 @@ export class CreateUserDto {
 }
 
 export class UpdateUserDto extends PartialType(
-  PickType(CreateUserDto, ['fullName', 'phone', 'email', 'address', 'schoolId'] as const),
+  PickType(CreateUserDto, ['fullName', 'phone', 'email', 'address', 'schoolId', 'cameraAccess'] as const),
 ) {}
 
 export class UpdateProfileDto extends PartialType(
@@ -63,5 +79,6 @@ export class ListUsersQueryDto {
   /** Matches name, phone or email */
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   search?: string;
 }

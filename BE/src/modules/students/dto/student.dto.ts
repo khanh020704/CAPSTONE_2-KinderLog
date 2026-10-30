@@ -1,5 +1,15 @@
 import { PartialType } from '@nestjs/swagger';
-import { IsBoolean, IsDateString, IsEnum, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+import {
+  IsBoolean,
+  IsDateString,
+  IsEnum,
+  IsIn,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Length,
+  MaxLength,
+} from 'class-validator';
 import { Gender, RecordStatus, Relationship } from '../../../common/enums';
 
 export class CreateStudentDto {
@@ -46,6 +56,7 @@ export class ListStudentsQueryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   search?: string;
 }
 
@@ -59,4 +70,9 @@ export class LinkParentDto {
   @IsOptional()
   @IsBoolean()
   isPrimary?: boolean;
+
+  /** ACTIVE (default) or INACTIVE: an inactive link hides the child from the parent. */
+  @IsOptional()
+  @IsIn([RecordStatus.ACTIVE, RecordStatus.INACTIVE])
+  status?: RecordStatus;
 }

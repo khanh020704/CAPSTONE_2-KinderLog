@@ -10,15 +10,22 @@ import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { JwtAuthGuard, RolesGuard } from './common/guards';
 import configuration, { envValidationSchema } from './config/configuration';
 import { dataSourceOptions } from './database/data-source';
+import { AcademicYearsModule } from './modules/academic-years/academic-years.module';
 import { AccessModule } from './modules/access/access.service';
+import { AnnouncementsModule } from './modules/announcements/announcements.module';
+import { AuditLogsModule } from './modules/audit-logs/audit-logs.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CacheModule } from './modules/cache/cache.service';
 import { CameraStreamsModule } from './modules/camera-streams/camera-streams.module';
 import { ClassesModule } from './modules/classes/classes.module';
+import { aiReadiness } from './modules/daily-journals/ai/ai-readiness';
 import { DailyJournalsModule } from './modules/daily-journals/daily-journals.module';
+import { MessagesModule } from './modules/messages/messages.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { SchoolsModule } from './modules/schools/schools.module';
 import { StudentsModule } from './modules/students/students.module';
+import { SystemModule } from './modules/system/system.module';
 import { UsersModule } from './modules/users/users.module';
 
 const DB_ENGINE: Record<string, string> = { mssql: 'SQL Server' };
@@ -39,6 +46,7 @@ class HealthController {
     const base = {
       dbEngine: DB_ENGINE[this.db.options.type] ?? this.db.options.type,
       aiMode: this.config.get<string>('ai.mode'),
+      ai: aiReadiness(this.config),
       time: new Date().toISOString(),
     };
     const started = Date.now();
@@ -67,6 +75,12 @@ class HealthController {
     StudentsModule,
     DailyJournalsModule,
     CameraStreamsModule,
+    SystemModule,
+    AcademicYearsModule,
+    AnnouncementsModule,
+    NotificationsModule,
+    MessagesModule,
+    AuditLogsModule,
     ReportsModule,
   ],
   controllers: [HealthController],

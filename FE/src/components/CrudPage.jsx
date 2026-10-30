@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { AlertCircle, ArrowDown, ArrowUp, Eye, ImagePlus, Pencil, Plus } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { AlertCircle, AlertTriangle, ArrowDown, ArrowUp, Eye, ImagePlus, Pencil, Plus } from 'lucide-react'
 import { isEmail, isPhone, norm, readFileAsDataURL } from '../lib/utils'
 import { errorText } from '../lib/labels'
 import {
@@ -50,7 +50,7 @@ export function FormFields({ fields, form, setForm, errors = {} }) {
         else if (f.type === 'photo')
           control = (
             <div className="photo-field">
-              <Avatar name={form.name || '?'} src={form[f.name]} size={56} />
+              <Avatar name={form.name || form.fullName || '?'} src={form[f.name]} size={56} />
               <label className="btn btn-sm">
                 <ImagePlus size={16} /> {form[f.name] ? 'Change photo' : 'Upload photo'}
                 <input type="file" accept="image/*" hidden onChange={async (e) => e.target.files[0] && set(f.name, await readFileAsDataURL(e.target.files[0]))} />
@@ -92,6 +92,7 @@ export default function CrudPage({
   loading: loadingProp, // pass the request state when rows come from the backend
   error: loadError,
   onRetry,
+  warning, // (form, editing) => '' | message: a soft warning shown in the form; saving needs one more confirmation
 }) {
   const toast = useToast()
   const fakeLoading = useFakeLoad()
@@ -107,6 +108,12 @@ export default function CrudPage({
   const [saving, setSaving] = useState(false)
   const [viewing, setViewing] = useState(null)
   const [confirm, setConfirm] = useState(null)
+  const [acceptedWarning, setAcceptedWarning] = useState('')
+  const warningRef = useRef(null)
+  // asking for confirmation: bring the warning into view (it sits above the fields of a long form)
+  useEffect(() => {
+    if (acceptedWarning) warningRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [acceptedWarning])
 
   const filtered = useMemo(() => {
     const nq = norm(q)
@@ -131,8 +138,11 @@ export default function CrudPage({
     setForm(initial(row))
     setErrors({})
     setFormError('')
+    setAcceptedWarning('')
     setEditing(row)
   }
+  const warningText = editing !== undefined && warning ? warning(form, editing) : ''
+  const needsConfirm = !!warningText && acceptedWarning !== warningText
 
   const submit = (e, patch) => {
     e?.preventDefault()
@@ -141,6 +151,9 @@ export default function CrudPage({
     setErrors(errs)
     setFormError('')
     if (Object.keys(errs).length) return
+    // first save with a warning only asks for confirmation; the next one (same warning) goes through
+    const warn = warning ? warning(data, editing) : ''
+    if (warn && acceptedWarning !== warn) return setAcceptedWarning(warn)
     setSaving(true)
     // onSave may be async (backend call): it returns/resolves an error message, or throws an API error.
     Promise.resolve()
@@ -273,6 +286,14 @@ export default function CrudPage({
               <AlertCircle size={18} /> {formError}
             </div>
           )}
+          {warningText && (
+            <div className="alert alert-warning" role="alert" ref={warningRef}>
+              <AlertTriangle size={18} />
+              <span>
+                {warningText} {needsConfirm ? 'You can still save it.' : 'Press Save anyway to keep this choice.'}
+              </span>
+            </div>
+          )}
           <FormFields fields={activeFields} form={form} setForm={setForm} errors={errors} />
           <div className="form-actions">
             <button type="button" className="btn" onClick={() => setEditing(undefined)} disabled={saving}>
@@ -286,7 +307,7 @@ export default function CrudPage({
               ))
             ) : (
               <button type="submit" className="btn btn-primary" disabled={saving}>
-                {saving ? 'Saving…' : saveLabel || (editing ? 'Save Changes' : 'Save')}
+                {saving ? 'Saving…' : warningText && !needsConfirm ? 'Save anyway' : saveLabel || (editing ? 'Save Changes' : 'Save')}
               </button>
             )}
           </div>

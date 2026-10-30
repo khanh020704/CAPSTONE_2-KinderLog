@@ -1,9 +1,12 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { AuthUser } from '../../common/decorators';
 import { RecordStatus, UserRole } from '../../common/enums';
 import { AccessService } from '../access/access.service';
+import { ClassJournal } from '../daily-journals/entities/class-journal.entity';
+import { DailyJournal } from '../daily-journals/entities/daily-journal.entity';
+import { Student } from '../students/entities/student.entity';
 import { User } from '../users/entities/user.entity';
 import { CreateClassDto, ListClassesQueryDto, UpdateClassDto } from './dto/class.dto';
 import { ClassEntity } from './entities/class.entity';
@@ -32,7 +35,7 @@ export class ClassesService {
       .orderBy('c.academicYear', 'DESC')
       .addOrderBy('c.name', 'ASC');
     if (schoolId) qb.andWhere('c.schoolId = :schoolId', { schoolId });
-    if (visible) qb.andWhere('c.id IN (:...visible)', { visible });
+    if (visible) qb.andWhere(visible.length ? 'c.id IN (:...visible)' : '1=0', { visible });
     if (q.academicYear) qb.andWhere('c.academicYear = :y', { y: q.academicYear });
     return qb.getMany();
   }
@@ -49,6 +52,7 @@ export class ClassesService {
   async create(user: AuthUser, dto: CreateClassDto) {
     const schoolId = this.access.requireSchool(user);
     if (dto.homeroomTeacherId) await this.assertTeacher(schoolId, dto.homeroomTeacherId);
+    await this.assertNameFree(schoolId, dto.academicYear, dto.name);
     const saved = await this.classes.save(this.classes.create({ ...dto, schoolId }));
     return this.findOne(user, saved.id);
   }
@@ -56,14 +60,44 @@ export class ClassesService {
   async update(user: AuthUser, id: string, dto: UpdateClassDto) {
     const cls = await this.access.assertClass(user, id);
     if (dto.homeroomTeacherId) await this.assertTeacher(cls.schoolId, dto.homeroomTeacherId);
+    if (dto.name || dto.academicYear) {
+      await this.assertNameFree(cls.schoolId, dto.academicYear ?? cls.academicYear, dto.name ?? cls.name, id);
+    }
     await this.classes.update(id, dto);
     return this.findOne(user, id);
   }
 
+  /**
+   * Only a class with no students and no journal history can be deleted (its cameras go with it). Otherwise the
+   * principal gets the reason instead of a bare foreign-key error, and can deactivate the class to keep its records.
+   */
   async remove(user: AuthUser, id: string) {
     await this.access.assertClass(user, id);
-    await this.classes.delete(id); // RESTRICT while students remain
+    const [students, entries, classJournals] = await Promise.all([
+      this.classes.manager.count(Student, { where: { classId: id } }),
+      this.classes.manager.count(DailyJournal, { where: { classId: id } }),
+      this.classes.manager.count(ClassJournal, { where: { classId: id } }),
+    ]);
+    if (students) {
+      throw new ConflictException(
+        `This class still has ${students} student(s). Move them to another class first.`,
+      );
+    }
+    const journals = entries + classJournals;
+    if (journals) {
+      throw new ConflictException(
+        `This class has ${journals} journal entries in its history. Deactivate it instead of deleting it.`,
+      );
+    }
+    await this.classes.delete(id);
     return { success: true };
+  }
+
+  private async assertNameFree(schoolId: string, academicYear: string, name: string, exceptId?: string) {
+    const taken = await this.classes.exist({
+      where: { schoolId, academicYear, name: name.trim(), ...(exceptId && { id: Not(exceptId) }) },
+    });
+    if (taken) throw new ConflictException(`A class named ${name.trim()} already exists in ${academicYear}`);
   }
 
   private async assertTeacher(schoolId: string, teacherId: string) {

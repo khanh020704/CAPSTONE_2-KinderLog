@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 // Loads data from the backend. Keeps the previous data while reloading so screens don't flash.
 // `deps` re-run the request (e.g. a selected date); `reload()` re-runs it after a mutation.
+// When there is nothing to load yet (no class / child), resolve to undefined, not null: Loadable treats
+// undefined as "still loading" but renders its children for null.
 export function useApi(fn, deps = []) {
   const [state, setState] = useState({ data: undefined, loading: true, error: null })
   const [tick, setTick] = useState(0)

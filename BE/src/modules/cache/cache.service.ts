@@ -1,10 +1,21 @@
-import { Global, Injectable, Logger, Module, OnModuleDestroy } from '@nestjs/common';
+import {
+  CallHandler,
+  ExecutionContext,
+  Global,
+  Injectable,
+  Logger,
+  Module,
+  NestInterceptor,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import Redis from 'ioredis';
+import { mergeMap, Observable } from 'rxjs';
 
 /**
  * Thin JSON cache over Redis. Fails open: if Redis is down or not configured the API computes the value
- * every time instead of erroring, so a demo never breaks because of the cache.
+ * every time instead of erroring, so the API never breaks because of the cache.
  */
 @Injectable()
 export class CacheService implements OnModuleDestroy {
@@ -64,6 +75,26 @@ export class CacheService implements OnModuleDestroy {
   }
 }
 
+/**
+ * Dashboards are cached; any successful write (school, account, class, student, camera, journal…) can change their
+ * figures, so it drops the cached dashboards. Writes are rare next to dashboard reads, so this costs little.
+ */
+@Injectable()
+export class DashboardCacheInterceptor implements NestInterceptor {
+  constructor(private readonly cache: CacheService) {}
+
+  intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
+    const method = ctx.switchToHttp().getRequest<{ method: string }>().method;
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return next.handle();
+    return next
+      .handle()
+      .pipe(mergeMap(async (body: unknown) => (await this.cache.invalidate('dash:'), body)));
+  }
+}
+
 @Global()
-@Module({ providers: [CacheService], exports: [CacheService] })
+@Module({
+  providers: [CacheService, { provide: APP_INTERCEPTOR, useClass: DashboardCacheInterceptor }],
+  exports: [CacheService],
+})
 export class CacheModule {}

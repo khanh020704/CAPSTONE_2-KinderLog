@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
@@ -18,24 +18,23 @@ import {
   PenLine,
   Play,
   Save,
+  StickyNote,
   Send,
   ShieldCheck,
   Sparkles,
   Square,
-  UserPlus,
   Users,
 } from 'lucide-react'
-import { unreadMessages, useStore } from '../store/store'
-import { dayLabel, fmtDate, fmtLongDate, greeting, norm, relTime, todayISO } from '../lib/utils'
+import { useStore } from '../store/store'
+import { JOURNAL_SECTIONS, JOURNAL_STATUS, dayLabel, fmtDate, fmtLongDate, greeting, groupIssues, norm, relTime, todayISO } from '../lib/utils'
 import { api } from '../lib/api'
 import { useApi } from '../lib/useApi'
-import { GENDER, HEALTH_OPTIONS, JOURNAL_STATE, MEAL_OPTIONS, MOOD_OPTIONS, RELATIONSHIP, SLEEP_OPTIONS, errorText, label } from '../lib/labels'
-import { DayTimeline, SECTION_ICON } from '../components/Journal'
+import { GENDER, RELATIONSHIP, errorText, label } from '../lib/labels'
+import { JournalTimeline, SECTION_ICON } from '../components/Journal'
 import {
   Avatar,
   ConfirmDialog,
   EmptyState,
-  Field,
   Loadable,
   Modal,
   PageHeader,
@@ -51,6 +50,30 @@ import {
   useToast,
 } from '../components/ui'
 
+// The day being worked on is shared by Attendance and Daily Journal (and kept for the browser tab), so moving
+// between them, or reopening the menu, never jumps back to today.
+const JOURNAL_DATE_KEY = 'kinderlog.journalDate'
+function useJournalDate() {
+  const today = todayISO()
+  const [date, setDateState] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem(JOURNAL_DATE_KEY)
+      return saved && saved <= today ? saved : today
+    } catch {
+      return today
+    }
+  })
+  const setDate = (d) => {
+    setDateState(d)
+    try {
+      sessionStorage.setItem(JOURNAL_DATE_KEY, d)
+    } catch {
+      // storage unavailable: the date is kept for this page only
+    }
+  }
+  return [date, setDate]
+}
+
 // The homeroom class comes from the backend profile (GET /auth/me → classes).
 function useMyClass() {
   const { user } = useStore()
@@ -65,13 +88,8 @@ function NoClass() {
   )
 }
 
-// One label for the state of a class journal on a day, from the class-register summary.
-function journalState(summary) {
-  if (!summary || summary.logged === 0) return 'Not Started'
-  if (summary.approved >= summary.total && summary.total > 0) return 'Approved'
-  if (summary.approved > 0) return 'In Progress'
-  return 'Draft'
-}
+// The state of the day's class journal (classJournal of the class register): Draft / Needs Review → Approved → Published.
+const journalState = (classJournal) => (classJournal ? JOURNAL_STATUS[classJournal.status] : 'Not Started')
 
 const attendanceCounts = (summary) => ({
   total: summary.total,
@@ -84,10 +102,10 @@ const attendanceCounts = (summary) => ({
 // ---------- Dashboard ----------
 
 export function TeacherDashboard() {
-  const { db, user } = useStore()
+  const { user, counts } = useStore()
   const cls = useMyClass()
   const today = todayISO()
-  const q = useApi(() => (cls ? api.journals.classDay(cls.id, today) : Promise.resolve(null)), [cls?.id])
+  const q = useApi(() => (cls ? api.journals.classDay(cls.id, today) : Promise.resolve(undefined)), [cls?.id])
   if (!cls)
     return (
       <>
@@ -98,8 +116,11 @@ export function TeacherDashboard() {
 
   const summary = q.data?.summary
   const att = summary ? attendanceCounts(summary) : null
-  const state = journalState(summary)
-  const unread = unreadMessages(db, user)
+  const classJournal = q.data?.classJournal
+  const state = journalState(classJournal)
+  const unread = counts.messages
+  // Today's journal drafted from a voice recording (AI) that the teacher has not reviewed and approved yet.
+  const aiDrafts = classJournal?.source === 'voice' && classJournal.status === 'review' ? 1 : 0
 
   return (
     <>
@@ -123,7 +144,7 @@ export function TeacherDashboard() {
           </span>
           <span className="action-text">
             <strong>{state === 'Not Started' ? 'Create Daily Journal' : 'Continue Daily Journal'}</strong>
-            <span>{state === 'Not Started' ? 'Record with your voice or fill in the class form' : `Today's journal: ${state}`}</span>
+            <span>{state === 'Not Started' ? 'Record with your voice or write it manually' : `Today's journal: ${state}`}</span>
           </span>
           <ArrowRight size={20} />
         </Link>
@@ -160,7 +181,7 @@ export function TeacherDashboard() {
                 tint="mint"
               />
               <StatCard icon={BookOpen} label="Journal status" value={state} hint="today" tint="cream" />
-              <StatCard icon={Sparkles} label="Waiting for approval" value={summary.draft} hint="draft entries today" tint="lav" />
+              <StatCard icon={Sparkles} label="Pending reviews" value={aiDrafts} hint="AI drafts to review" tint="lav" />
               <StatCard icon={MessageCircle} label="Unread parent messages" value={unread} tint="sky" />
             </div>
 
@@ -195,7 +216,7 @@ export function MyClassPage() {
   const cls = useMyClass()
   const today = todayISO()
   const roster = useApi(() => (cls ? api.students.list({ classId: cls.id, status: 'ACTIVE' }) : Promise.resolve([])), [cls?.id])
-  const day = useApi(() => (cls ? api.journals.classDay(cls.id, today) : Promise.resolve(null)), [cls?.id])
+  const day = useApi(() => (cls ? api.journals.classDay(cls.id, today) : Promise.resolve(undefined)), [cls?.id])
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(null)
   if (!cls) return <NoClass />
@@ -296,16 +317,21 @@ export function AttendancePage() {
   const toast = useToast()
   const cls = useMyClass()
   const today = todayISO()
-  const [date, setDate] = useState(today)
-  const q = useApi(() => (cls ? api.journals.classDay(cls.id, date) : Promise.resolve(null)), [cls?.id, date])
+  const [date, setDate] = useJournalDate()
+  const q = useApi(() => (cls ? api.journals.classDay(cls.id, date) : Promise.resolve(undefined)), [cls?.id, date])
   const [recs, setRecs] = useState({})
+  const [saved, setSaved] = useState({})
+  const [noteOpen, setNoteOpen] = useState({})
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
 
   // Load the saved sheet when the day's data arrives; local edits stay until Save.
   useEffect(() => {
     if (!q.data) return
-    setRecs(Object.fromEntries(q.data.students.filter((x) => x.journal).map((x) => [x.student.id, { status: x.journal.attendance, note: x.journal.absenceReason || '' }])))
+    const sheet = Object.fromEntries(q.data.students.filter((x) => x.journal).map((x) => [x.student.id, { status: x.journal.attendance, note: x.journal.absenceReason || '' }]))
+    setRecs(sheet)
+    setSaved(sheet)
+    setNoteOpen({})
     setDirty(false)
   }, [q.data])
 
@@ -316,8 +342,9 @@ export function AttendancePage() {
     setRecs((p) => ({ ...p, [id]: { status: p[id]?.status, note: p[id]?.note || '', ...patch } }))
     setDirty(true)
   }
+  // Absence reasons are dropped; a note on a child already present (e.g. "arrived late") stays.
   const markAll = () => {
-    setRecs(Object.fromEntries(students.map((s) => [s.id, { status: 'PRESENT', note: '' }])))
+    setRecs((p) => Object.fromEntries(students.map((s) => [s.id, { status: 'PRESENT', note: p[s.id]?.status === 'PRESENT' ? p[s.id].note : '' }])))
     setDirty(true)
   }
   const present = students.filter((s) => recs[s.id]?.status === 'PRESENT').length
@@ -327,12 +354,11 @@ export function AttendancePage() {
   const save = async () => {
     setSaving(true)
     try {
-      await api.journals.bulk({
-        classId: cls.id,
-        date,
-        defaults: { attendance: 'PRESENT' },
-        exceptions: students.filter((s) => recs[s.id]?.status === 'ABSENT').map((s) => ({ studentId: s.id, attendance: 'ABSENT', absenceReason: recs[s.id].note.trim() || null })),
-      })
+      // Only children marked present or absent are saved (and only when something changed): the others stay
+      // "not recorded" until the teacher marks them.
+      const note = (id) => recs[id]?.note?.trim() || null
+      const changed = students.filter((s) => recs[s.id]?.status && (recs[s.id].status !== saved[s.id]?.status || note(s.id) !== (saved[s.id]?.note?.trim() || null)))
+      for (const s of changed) await api.journals.upsertOne(s.id, { date, attendance: recs[s.id].status, absenceReason: note(s.id) })
       toast('Attendance saved.')
       q.reload()
     } catch (e) {
@@ -366,6 +392,7 @@ export function AttendancePage() {
               <div className="card list-card">
                 {students.map((s) => {
                   const r = recs[s.id]
+                  const showNote = noteOpen[s.id] || r?.note || r?.status === 'ABSENT'
                   return (
                     <div key={s.id} className="att-row">
                       <div className="att-who">
@@ -381,14 +408,17 @@ export function AttendancePage() {
                             Absent
                           </button>
                         </div>
+                        <button className="icon-btn" onClick={() => setNoteOpen((p) => ({ ...p, [s.id]: !p[s.id] }))} aria-label={`Note for ${s.fullName}`}>
+                          <StickyNote size={20} />
+                        </button>
                       </div>
-                      {r?.status === 'ABSENT' && (
+                      {showNote && (
                         <input
                           className="att-note"
-                          value={r.note}
+                          value={r?.note || ''}
                           onChange={(e) => set(s.id, { note: e.target.value })}
-                          placeholder="Reason for absence (optional)"
-                          aria-label={`Reason for absence of ${s.fullName}`}
+                          placeholder={r?.status === 'ABSENT' ? 'Reason for absence (optional)' : 'Note, e.g. arrived late (optional)'}
+                          aria-label={`Note for ${s.fullName}`}
                         />
                       )}
                     </div>
@@ -405,7 +435,7 @@ export function AttendancePage() {
                   </span>
                   {unmarked > 0 && (
                     <span className="muted">
-                      <strong>{unmarked}</strong> not marked — saved as present
+                      <strong>{unmarked}</strong> not recorded
                     </span>
                   )}
                 </div>
@@ -422,19 +452,29 @@ export function AttendancePage() {
 }
 
 // ---------- Daily Journal ----------
-// Voice → (browser Speech-to-Text or Whisper) → AI draft on the backend → teacher reviews the class form and
-// the exceptions → Save (DRAFT) → Approve (parents can see it). AI output is always a draft.
+// Voice → Speech-to-Text → the teacher checks the text → AI draft → teacher review/edit → approve → publish.
+// AI output is always a draft.
 
+const filledCount = (sections) => JOURNAL_SECTIONS.filter((s) => sections[s.key]?.trim()).length
 const mmss = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+const joinText = (...parts) => parts.filter((p) => p?.trim()).join(' ')
+
+// Live captions in the browser (Web Speech API, Vietnamese): Chrome and Edge. The recording itself goes to Whisper on
+// the server, which knows the children's names; the browser's text is the fallback.
 const SpeechRecognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
-const STEPS = ['Record', 'Speech-to-Text', 'AI draft', 'Your review']
+
+const STEPS = ['Record', 'Speech-to-Text', 'Check the text', 'AI draft']
 const BARS = 28
 
-// onDone({ transcript, audio }) must return a promise; the recorder shows "Generating…" until it settles.
-function Recorder({ onDone, onCancel }) {
-  const [phase, setPhase] = useState('idle') // idle → starting → recording ⇄ paused → transcribing → processing | failed
+// onDone(draft): { transcript, sections, personal, issues, audio: [url on the server], audioUrl: local playback }.
+function Recorder({ classId, journalId, date, onDone, onCancel }) {
+  // idle → starting → recording ⇄ paused → transcribing → editing → processing | failed
+  // In "editing" the teacher reads what was heard, corrects it in a text box, and presses Enter to make the draft.
+  const [phase, setPhase] = useState('idle')
   const [sec, setSec] = useState(0)
   const [live, setLive] = useState('')
+  const [text, setText] = useState('')
+  const [heardBy, setHeardBy] = useState('')
   const [error, setError] = useState('')
   const session = useRef({ finals: [], interim: '' })
   const wave = useRef(null)
@@ -460,9 +500,7 @@ function Recorder({ onDone, onCancel }) {
     setPhase('failed')
   }
 
-  // Live captions in the browser (Chrome/Edge). Without it, the recording itself goes to Whisper on the backend.
   const listen = () => {
-    if (!SpeechRecognition) return
     const s = session.current
     const rec = new SpeechRecognition()
     rec.lang = 'vi-VN'
@@ -471,14 +509,17 @@ function Recorder({ onDone, onCancel }) {
     rec.onresult = (e) => {
       let interim = ''
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        const text = e.results[i][0].transcript.trim()
-        if (e.results[i].isFinal) text && s.finals.push(text)
-        else interim += ` ${text}`
+        const heard = e.results[i][0].transcript.trim()
+        if (e.results[i].isFinal) heard && s.finals.push(heard)
+        else interim += ` ${heard}`
       }
       s.interim = interim.trim()
       setLive([...s.finals, s.interim].filter(Boolean).join('. '))
     }
-    rec.onerror = () => {}
+    rec.onerror = (e) => {
+      if (e.error !== 'no-speech' && e.error !== 'aborted') s.sttError = e.error
+    }
+    // The browser ends recognition after a silence; keep listening for as long as the teacher is recording.
     rec.onend = () => {
       if (!s.listening) return
       try {
@@ -492,6 +533,12 @@ function Recorder({ onDone, onCancel }) {
     rec.start()
   }
 
+  const stopListening = () => {
+    const s = session.current
+    s.listening = false
+    s.recognition?.stop()
+  }
+
   const start = async () => {
     setPhase('starting')
     let stream
@@ -503,16 +550,12 @@ function Recorder({ onDone, onCancel }) {
     const s = (session.current = { finals: [], interim: '', chunks: [], stream })
     s.recorder = new MediaRecorder(stream)
     s.recorder.ondataavailable = (e) => e.data.size && s.chunks.push(e.data)
-    s.recorder.onstop = () => {
-      s.blob = new Blob(s.chunks, { type: s.recorder.mimeType || 'audio/webm' })
-      s.stream.getTracks().forEach((t) => t.stop())
-    }
     s.recorder.start()
     s.audioCtx = new AudioContext()
     s.analyser = s.audioCtx.createAnalyser()
     s.analyser.fftSize = 64
     s.audioCtx.createMediaStreamSource(stream).connect(s.analyser)
-    listen()
+    if (SpeechRecognition) listen()
     setSec(0)
     setLive('')
     setPhase('recording')
@@ -520,28 +563,28 @@ function Recorder({ onDone, onCancel }) {
 
   const pause = () => {
     const s = session.current
-    s.listening = false
-    s.recognition?.stop()
+    stopListening()
     s.recorder.pause()
     setPhase('paused')
   }
   const resume = () => {
     const s = session.current
     s.recorder.resume()
-    if (s.recognition) {
-      s.listening = true
-      try {
-        s.recognition.start()
-      } catch {
-        // still winding down from the pause; onend restarts it
-      }
+    s.listening = !!s.recognition
+    try {
+      s.recognition?.start()
+    } catch {
+      // still winding down from the pause; onend restarts it
     }
     setPhase('recording')
   }
   const stop = () => {
     const s = session.current
-    s.listening = false
-    s.recognition?.stop()
+    stopListening()
+    s.recorder.onstop = () => {
+      s.audioUrl = URL.createObjectURL(new Blob(s.chunks, { type: s.recorder.mimeType }))
+      s.stream.getTracks().forEach((t) => t.stop())
+    }
     s.recorder.stop()
     setPhase('transcribing')
   }
@@ -549,6 +592,7 @@ function Recorder({ onDone, onCancel }) {
   useEffect(() => {
     if (phase !== 'recording') return
     const t = setInterval(() => setSec((v) => v + 1), 1000)
+    // The waveform follows the live microphone level.
     const { analyser } = session.current
     const data = new Uint8Array(analyser.frequencyBinCount)
     let frame
@@ -568,23 +612,72 @@ function Recorder({ onDone, onCancel }) {
 
   useEffect(() => {
     if (phase === 'transcribing') {
+      let current = true
       // Give the recogniser a moment to deliver its last result.
-      const t = setTimeout(() => setPhase('processing'), SpeechRecognition ? 1500 : 300)
-      return () => clearTimeout(t)
+      const t = setTimeout(() => {
+        const s = session.current
+        const browserText = [...s.finals, s.interim].filter(Boolean).join('. ')
+        const edit = (heard, by) => {
+          if (!current) return
+          setText(heard)
+          setHeardBy(by)
+          setPhase('editing')
+        }
+        if (!s.chunks.length) {
+          if (browserText) return edit(browserText, 'browser')
+          return fail("We couldn't process the recording. No speech was detected. Please try again.")
+        }
+        const audio = new Blob(s.chunks, { type: s.recorder.mimeType || 'audio/webm' })
+        api.classJournals
+          .transcribe(classId, audio, browserText)
+          .then((heard) => {
+            s.uploadedUrl = heard.audioUrl
+            edit(heard.transcript, heard.transcriptSource)
+          })
+          .catch((err) => (browserText ? edit(browserText, 'browser') : current && fail(`We couldn't process the recording. ${errorText(err)}`)))
+      }, 1500)
+      return () => {
+        current = false
+        clearTimeout(t)
+      }
     }
     if (phase === 'processing') {
+      let current = true
       const s = session.current
-      const transcript = [...s.finals, s.interim].filter(Boolean).join('. ')
-      done
-        .current({ transcript, audio: s.blob })
-        .then(release)
-        .catch((e) => fail(`We couldn't create the draft. ${errorText(e)}`))
+      // The text the teacher confirmed goes to the server: the AI sorts it into the journal structure, and code
+      // checks names, contradictions, health information and attendance.
+      api.classJournals
+        .voiceDraft({ classId, transcript: text.trim(), audioUrl: s.uploadedUrl, journalId, date })
+        .then(
+          (draft) =>
+            current &&
+            done.current({
+              transcript: draft.transcript,
+              sections: draft.sections,
+              personal: draft.personal,
+              issues: draft.issues || [],
+              audio: draft.audioUrl ? [draft.audioUrl] : [],
+              audioUrl: s.audioUrl,
+            }),
+        )
+        .catch((err) => current && fail(`We couldn't create the draft. ${errorText(err)}`))
+      return () => {
+        current = false
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
 
+  // Enter makes the draft; Shift+Enter starts a new line. While a Vietnamese keyboard is still composing a
+  // letter, Enter belongs to the keyboard.
+  const submitOnEnter = (e) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return
+    e.preventDefault()
+    if (text.trim()) setPhase('processing')
+  }
+
   const supported = !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined'
-  const stepNow = phase === 'transcribing' ? 1 : phase === 'processing' ? 2 : 0
+  const stepNow = { transcribing: 1, editing: 2, processing: 3 }[phase] ?? 0
   const steps = (
     <div className="steps">
       {STEPS.map((s, i) => (
@@ -604,9 +697,9 @@ function Recorder({ onDone, onCancel }) {
           </button>
           <h2>{phase === 'starting' ? 'Waiting for the microphone…' : 'Record Journal'}</h2>
           {supported ? (
-            <p className="muted">Describe the day in Vietnamese: meals, learning, nap, health and mood. Name a child (“bé An ăn ít”) to record an exception just for them.</p>
+            <p className="muted">Tap the microphone and describe the day in Vietnamese: meals, learning, nap, health and mood. Your browser will ask to use the microphone.</p>
           ) : (
-            <p className="muted">Voice recording is not available in this browser. Please fill in the class form instead.</p>
+            <p className="muted">Voice recording is not available in this browser. Please write the journal manually.</p>
           )}
           {steps}
           <button className="btn" onClick={onCancel}>
@@ -641,11 +734,35 @@ function Recorder({ onDone, onCancel }) {
         </>
       )}
 
+      {phase === 'editing' && (
+        <>
+          <h2>Check what was heard</h2>
+          <p className="muted">
+            Correct names and words if needed, then press <strong>Enter</strong> to make the draft. Shift+Enter starts a new line.
+            {heardBy === 'browser' && ' (Heard by the browser: check the children’s names carefully.)'}
+          </p>
+          {session.current.audioUrl && <audio className="rec-audio" controls src={session.current.audioUrl} />}
+          <textarea className="rec-text" rows={6} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={submitOnEnter} aria-label="What you said" autoFocus />
+          <div className="rec-controls">
+            <button className="btn btn-primary" onClick={() => setPhase('processing')} disabled={!text.trim()}>
+              <Sparkles size={18} /> Create Draft ⏎
+            </button>
+            <button className="btn" onClick={() => setPhase('idle')}>
+              <Mic size={18} /> Record Again
+            </button>
+            <button className="btn" onClick={onCancel}>
+              Cancel
+            </button>
+          </div>
+          {steps}
+        </>
+      )}
+
       {(phase === 'transcribing' || phase === 'processing') && (
         <>
           <span className="ring" aria-hidden="true" />
           <h2 aria-live="polite">{phase === 'transcribing' ? 'Transcribing your voice...' : 'Generating journal draft...'}</h2>
-          <p className="muted">{phase === 'transcribing' ? 'Turning your recording into text.' : 'The AI is sorting what you said into the class form and the exceptions.'}</p>
+          <p className="muted">{phase === 'transcribing' ? 'Turning your recording into text.' : 'Organising the text into journal sections for you to review.'}</p>
           {steps}
         </>
       )}
@@ -667,288 +784,151 @@ function Recorder({ onDone, onCancel }) {
   )
 }
 
-// ---- form model ----
-
-// What the whole class shares, and what one child may override.
-const CLASS_FIELDS = ['mealLevel', 'mealNote', 'sleepMinutes', 'sleepQuality', 'learningNote', 'healthStatus', 'healthNote', 'mood', 'teacherNote']
-const EXCEPTION_FIELDS = [
-  'attendance',
-  'absenceReason',
-  'mealLevel',
-  'mealNote',
-  'sleepMinutes',
-  'sleepQuality',
-  'healthStatus',
-  'temperature',
-  'healthNote',
-  'mood',
-  'teacherNote',
-]
-const IN_CLASS = ['mealLevel', 'mealNote', 'sleepMinutes', 'sleepQuality', 'learningNote', 'mood']
-const TEXT_FIELDS = new Set(['mealNote', 'learningNote', 'healthNote', 'teacherNote', 'absenceReason'])
-const PRESET = { mealLevel: 'ALL', mealNote: '', sleepMinutes: 90, sleepQuality: 'GOOD', learningNote: '', healthStatus: 'NORMAL', healthNote: '', mood: 'HAPPY', teacherNote: '' }
-
-const blank = (v) => v === null || v === undefined || v === ''
-const same = (a, b) => (blank(a) && blank(b)) || String(a) === String(b)
-const joinText = (a, b) => [a, b].filter((x) => !blank(x)).join(' ')
-
-// Blank counts as a value: if most children have no note, the class has no note.
-function mostCommon(values) {
-  const counts = new Map()
-  for (const v of values) {
-    const k = blank(v) ? '' : v
-    counts.set(k, (counts.get(k) || 0) + 1)
-  }
-  let best = ''
-  let n = 0
-  for (const [v, c] of counts) if (c > n) [best, n] = [v, c]
-  return best
+const ISSUE_TITLES = {
+  unknown_student: 'Name not in the class',
+  ambiguous_student: 'Which child?',
+  name_mismatch: 'Name does not match exactly',
+  missing_student: 'No name given',
+  child_named_in_class_text: 'Names a child, but shown to every parent',
+  contradiction: 'Statements disagree',
+  unclear: 'Unclear',
+  health_alert: 'Health information to check',
+  unsupported_content: 'Words the teacher did not say',
+  attendance_mismatch: 'Does not match attendance',
+  correction: 'Corrected by a later recording',
 }
 
-// Saved entries → class form + exceptions: the class value is what most present children share; a child whose
-// value differs (or who was absent) becomes an exception with only the differing fields.
-function formFromDay(day) {
-  const entries = day.students.map((x) => x.journal).filter(Boolean)
-  if (!entries.length) return { defaults: { ...PRESET }, exceptions: {} }
-  const present = entries.filter((e) => e.attendance === 'PRESENT')
-  const defaults = Object.fromEntries(CLASS_FIELDS.map((f) => [f, mostCommon(present.map((e) => e[f])) ?? '']))
-  const exceptions = {}
-  for (const e of entries) {
-    const diff = {}
-    if (e.attendance === 'ABSENT') {
-      diff.attendance = 'ABSENT'
-      if (e.absenceReason) diff.absenceReason = e.absenceReason
-    } else {
-      for (const f of EXCEPTION_FIELDS) {
-        if (f === 'attendance' || f === 'absenceReason') continue
-        if (f === 'temperature' ? !blank(e[f]) : !same(e[f], defaults[f])) diff[f] = e[f] ?? ''
-      }
-    }
-    if (Object.keys(diff).length) exceptions[e.studentId] = diff
-  }
-  return { defaults, exceptions }
-}
-
-// An AI draft adds to the form: notes are appended, levels and numbers replace what was there.
-function mergeDraft(form, draft) {
-  const put = (target, src) => {
-    const out = { ...target }
-    for (const [k, v] of Object.entries(src)) {
-      if (blank(v) || k === 'studentId' || k === 'studentName') continue
-      out[k] = TEXT_FIELDS.has(k) ? joinText(out[k], v) : v
-    }
-    return out
-  }
-  const { attendance: _ignored, absenceReason: _ignored2, temperature: _t, ...classPart } = draft.classDefaults
-  const exceptions = { ...form.exceptions }
-  for (const ex of draft.exceptions) exceptions[ex.studentId] = put(exceptions[ex.studentId] || {}, ex)
-  return { defaults: put(form.defaults, classPart), exceptions }
-}
-
-const toValue = (f, v) => (blank(v) ? null : f === 'sleepMinutes' ? Number(v) : f === 'temperature' ? Number(String(v).replace(',', '.')) : v)
-
-function payloadFrom(form, roster) {
-  const ids = new Set(roster.map((s) => s.id))
-  return {
-    defaults: { attendance: 'PRESENT', ...Object.fromEntries(CLASS_FIELDS.map((f) => [f, toValue(f, form.defaults[f])])) },
-    exceptions: Object.entries(form.exceptions)
-      .filter(([id]) => ids.has(id))
-      .map(([studentId, o]) => {
-        const absent = o.attendance === 'ABSENT'
-        const fields = Object.entries(o).filter(([k, v]) => !blank(v) && (!absent || !IN_CLASS.includes(k)))
-        return { studentId, ...Object.fromEntries(fields.map(([k, v]) => [k, toValue(k, v)])) }
-      })
-      .filter((e) => Object.keys(e).length > 1),
-  }
-}
-
-// ---- editor ----
-
-function ClassForm({ value, onChange }) {
-  const set = (k) => (v) => onChange({ ...value, [k]: v })
-  const Icon = SECTION_ICON
+// What the system could not decide on its own. A held statement is not in the journal yet: the teacher puts
+// it in a child's note, keeps it for the whole class, or leaves it out. Other points are confirmed once checked.
+function ReviewIssues({ issues, students, onResolve }) {
+  const [chosen, setChosen] = useState({})
+  const groups = groupIssues(issues)
+  const resolveAll = (group, resolution, childId) => group.forEach((issue) => onResolve(issue, resolution, childId))
   return (
     <div className="card">
       <div className="card-head">
-        <h2>For the whole class</h2>
-        <span className="chip">
-          <Users size={14} /> Applied to every child, except the ones below
-        </span>
+        <h2>
+          <AlertTriangle size={18} /> Needs your confirmation
+        </h2>
+        <span className="chip">{groups.length} to check</span>
       </div>
-      <div className="j-grid">
-        <div className="j-block">
-          <div className="j-section-head">
-            <span>
-              <Icon.meal size={18} /> Meal
-            </span>
+      <span className="muted small">Nothing below is sent to parents until you decide. KinderLog never guesses a child or diagnoses.</span>
+      {groups.map((group) => {
+        const [issue] = group
+        const options = [...issue.candidates, ...students.map((s) => s.id).filter((id) => !issue.candidates.includes(id))]
+          .map((id) => students.find((s) => s.id === id))
+          .filter(Boolean)
+          .map((s) => ({ value: s.id, label: issue.candidates.includes(s.id) ? `${s.name} (closest match)` : s.name }))
+        const child = chosen[issue.id] ?? issue.candidates[0] ?? ''
+        const several = group.length > 1
+        return (
+          <div key={issue.id} className="j-section">
+            <div className="j-section-head">
+              <span>
+                <strong>{ISSUE_TITLES[issue.type] || 'Check'}</strong>
+                {issue.spokenNames.length > 0 && <span className="chip">heard: {issue.spokenNames.join(', ')}</span>}
+                {several && <span className="chip">{group.length} statements</span>}
+              </span>
+            </div>
+            <span className="block">{issue.message}</span>
+            {issue.previousText ? (
+              <span className="muted block small">
+                Before: <s>“{issue.previousText}”</s>
+                <br />
+                Now: “{issue.text}”
+              </span>
+            ) : (
+              group.map(
+                (i) =>
+                  i.text && (
+                    <span key={i.id} className="muted block small">
+                      “{i.text}”
+                    </span>
+                  ),
+              )
+            )}
+            {issue.held ? (
+              <div className="toolbar">
+                <Select value={child} onChange={(v) => setChosen((p) => ({ ...p, [issue.id]: v }))} options={options} placeholder="Choose the child" aria-label="Child" />
+                <button className="btn btn-sm btn-primary" disabled={!child} onClick={() => resolveAll(group, 'assigned', child)}>
+                  {several ? "Add all to this child's note" : "Add to this child's note"}
+                </button>
+                <button className="btn btn-sm" onClick={() => resolveAll(group, 'class')}>
+                  {issue.type === 'child_named_in_class_text' ? 'Keep for the whole class' : 'For the whole class'}
+                </button>
+                <button className="btn btn-sm" onClick={() => resolveAll(group, 'discarded')}>
+                  {several ? 'Leave all out' : 'Leave out'}
+                </button>
+              </div>
+            ) : (
+              <div className="toolbar">
+                <button className="btn btn-sm" onClick={() => resolveAll(group, 'confirmed')}>
+                  <CheckCircle2 size={14} /> I checked this
+                </button>
+                {issue.previousText && (
+                  <button className="btn btn-sm" onClick={() => resolveAll(group, 'reverted')}>
+                    Keep the earlier statement too
+                  </button>
+                )}
+                <span className="muted small">Correct the text in the sections below if needed.</span>
+              </div>
+            )}
           </div>
-          <Select value={value.mealLevel} onChange={set('mealLevel')} options={MEAL_OPTIONS} placeholder="Not recorded" aria-label="How much the class ate" />
-          <textarea rows={2} value={value.mealNote} onChange={(e) => set('mealNote')(e.target.value)} placeholder="Dishes, how the children ate" aria-label="Meal note" />
-        </div>
-        <div className="j-block">
-          <div className="j-section-head">
-            <span>
-              <Icon.sleep size={18} /> Nap
-            </span>
-          </div>
-          <div className="j-inline">
-            <input type="number" min="0" max="300" value={value.sleepMinutes} onChange={(e) => set('sleepMinutes')(e.target.value)} aria-label="Nap minutes" />
-            <span className="muted">minutes</span>
-          </div>
-          <Select value={value.sleepQuality} onChange={set('sleepQuality')} options={SLEEP_OPTIONS} placeholder="Not recorded" aria-label="Sleep quality" />
-        </div>
-        <div className="j-block j-wide">
-          <div className="j-section-head">
-            <span>
-              <Icon.learning size={18} /> Learning
-            </span>
-          </div>
-          <textarea rows={2} value={value.learningNote} onChange={(e) => set('learningNote')(e.target.value)} placeholder="Activities of the day" aria-label="Learning" />
-        </div>
-        <div className="j-block">
-          <div className="j-section-head">
-            <span>
-              <Icon.health size={18} /> Health
-            </span>
-          </div>
-          <Select value={value.healthStatus} onChange={set('healthStatus')} options={HEALTH_OPTIONS} placeholder="Not recorded" aria-label="Health" />
-          <textarea rows={2} value={value.healthNote} onChange={(e) => set('healthNote')(e.target.value)} placeholder="Health note (optional)" aria-label="Health note" />
-        </div>
-        <div className="j-block">
-          <div className="j-section-head">
-            <span>
-              <Icon.emotion size={18} /> Emotion
-            </span>
-          </div>
-          <Select value={value.mood} onChange={set('mood')} options={MOOD_OPTIONS} placeholder="Not recorded" aria-label="Mood" />
-        </div>
-        <div className="j-block j-wide">
-          <div className="j-section-head">
-            <span>
-              <Icon.note size={18} /> Note for all parents
-            </span>
-          </div>
-          <textarea
-            rows={2}
-            value={value.teacherNote}
-            onChange={(e) => set('teacherNote')(e.target.value)}
-            placeholder="Reminders for the families of the class"
-            aria-label="Note for all parents"
-          />
-        </div>
-      </div>
+        )
+      })}
     </div>
   )
 }
 
-function ExceptionRow({ student, value, onChange, onRemove, warnings }) {
-  const set = (k) => (v) => onChange({ ...value, [k]: v })
-  const absent = value.attendance === 'ABSENT'
-  return (
-    <div className="exc-row">
-      <div className="exc-head">
-        <span className="cell-user">
-          <Avatar name={student.fullName} src={student.avatarUrl} size={32} />
-          <strong>{student.fullName}</strong>
-          {student.allergies && <span className="chip chip-warn">⚠ {student.allergies}</span>}
-        </span>
-        <button className="btn btn-sm" onClick={onRemove}>
-          <Eraser size={14} /> Same as class
-        </button>
-      </div>
-      {warnings?.length > 0 && (
-        <div className="exc-warn">
-          <AlertTriangle size={14} /> {warnings.join(' · ')}
-        </div>
-      )}
-      <div className="exc-grid">
-        <Field label="Attendance">
-          <Select
-            value={value.attendance || 'PRESENT'}
-            onChange={set('attendance')}
-            options={[
-              { value: 'PRESENT', label: 'Present' },
-              { value: 'ABSENT', label: 'Absent' },
-            ]}
-          />
-        </Field>
-        {absent ? (
-          <Field label="Reason for absence" full>
-            <input value={value.absenceReason || ''} onChange={(e) => set('absenceReason')(e.target.value)} placeholder="e.g. Gia đình xin nghỉ" />
-          </Field>
-        ) : (
-          <>
-            <Field label="Meal">
-              <Select value={value.mealLevel || ''} onChange={set('mealLevel')} options={MEAL_OPTIONS} placeholder="Same as class" />
-            </Field>
-            <Field label="Nap (minutes)">
-              <input type="number" min="0" max="300" value={value.sleepMinutes ?? ''} onChange={(e) => set('sleepMinutes')(e.target.value)} placeholder="Same as class" />
-            </Field>
-            <Field label="Health">
-              <Select value={value.healthStatus || ''} onChange={set('healthStatus')} options={HEALTH_OPTIONS} placeholder="Same as class" />
-            </Field>
-            <Field label="Temperature (°C)">
-              <input inputMode="decimal" value={value.temperature ?? ''} onChange={(e) => set('temperature')(e.target.value)} placeholder="e.g. 37.8" />
-            </Field>
-            <Field label="Mood">
-              <Select value={value.mood || ''} onChange={set('mood')} options={MOOD_OPTIONS} placeholder="Same as class" />
-            </Field>
-            <Field label="Health / meal detail" full>
-              <input value={value.healthNote || ''} onChange={(e) => set('healthNote')(e.target.value)} placeholder="e.g. Bé hơi sốt, cô đã báo phụ huynh" />
-            </Field>
-          </>
-        )}
-        <Field label="Personal note (only this family sees it)" full>
-          <textarea rows={2} value={value.teacherNote || ''} onChange={(e) => set('teacherNote')(e.target.value)} placeholder="Replaces the class note for this child" />
-        </Field>
-      </div>
-    </div>
-  )
-}
+// The teacher's decisions on the points of a voice draft, as PUT /class-journals/:id takes them.
+const decisionsOf = (issues) => issues.map((i) => ({ id: i.id, status: i.status, resolution: i.resolution, assignedTo: i.assignedTo }))
 
-function JournalEditor({ cls, date, day, initialDraft, onClose, onSaved }) {
+function JournalEditor({ cls, students, absentIds, initial, onClose, onChanged }) {
   const { db } = useStore()
   const toast = useToast()
-  const roster = day.students.map((x) => x.student)
-  const byStudent = useMemo(() => Object.fromEntries(roster.map((s) => [s.id, s])), [roster])
-  const [form, setForm] = useState(() => (initialDraft ? mergeDraft(formFromDay(day), initialDraft.draft) : formFromDay(day)))
-  const [ai, setAi] = useState(
-    initialDraft
-      ? { transcripts: [initialDraft.transcript], audios: initialDraft.audioUrl ? [initialDraft.audioUrl] : [], unrecognized: initialDraft.draft.unrecognizedNames }
-      : null,
-  )
-  const [dirty, setDirty] = useState(!!initialDraft)
+  const [journal, setJournal] = useState(initial)
+  const [sections, setSections] = useState(initial.sections)
+  const [personal, setPersonal] = useState(initial.personal || {})
+  const [photos, setPhotos] = useState(initial.photos)
+  const [status, setStatus] = useState(initial.status)
+  // Points of a voice draft the teacher must confirm before approving (names, contradictions, health).
+  const [issues, setIssues] = useState(initial.issues || [])
+  const [audios, setAudios] = useState(initial.audio || [])
+  const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState('')
-  const [warnings, setWarnings] = useState({})
   const [recording, setRecording] = useState(false)
+  const [preview, setPreview] = useState(false)
   const [confirm, setConfirm] = useState(false)
   const [leave, setLeave] = useState(false)
-  const [preview, setPreview] = useState(null)
-  const summary = day.summary
-  const state = journalState(summary)
   const maxPhotos = Number(db.settings.maxPhotos) || 6
+  const voice = journal.source === 'voice'
+  const unapproved = voice ? 'review' : 'draft'
+  const noted = students.filter((s) => s.id in personal)
+  const personalCount = noted.filter((s) => personal[s.id].trim()).length
+  const filled = filledCount(sections)
+  const openIssues = issues.filter((i) => i.status === 'open')
+  // Published before: parents see the published version until a change is approved and published again.
+  const wasPublished = journal.revision > 0
 
-  // Photos are stored per child; show each file once.
-  const photos = useMemo(() => {
-    const byUrl = new Map()
-    for (const { journal } of day.students) for (const p of journal?.photos || []) byUrl.set(p.url, [...(byUrl.get(p.url) || []), p.id])
-    return [...byUrl].map(([url, ids]) => ({ url, ids }))
-  }, [day])
-
-  const update = (fn) => {
-    setForm(fn)
-    setDirty(true)
-  }
-  const setException = (id, v) => update((f) => ({ ...f, exceptions: { ...f.exceptions, [id]: v } }))
-  const removeException = (id) => update((f) => ({ ...f, exceptions: Object.fromEntries(Object.entries(f.exceptions).filter(([k]) => k !== id)) }))
-  const exceptionIds = Object.keys(form.exceptions).filter((id) => byStudent[id])
-
-  const save = async () => {
-    const res = await api.journals.bulk({ classId: cls.id, date, source: ai ? 'VOICE' : 'BULK', ...payloadFrom(form, roster) })
-    setWarnings(Object.fromEntries(res.warnings.map((w) => [w.studentId, w.messages])))
+  const load = (j) => {
+    setJournal(j)
+    setSections(j.sections)
+    setPersonal(j.personal)
+    setPhotos(j.photos)
+    setStatus(j.status)
+    setIssues(j.issues)
+    setAudios(j.audio)
     setDirty(false)
-    return res
+    onChanged()
   }
+
+  // Any change after approval or publishing needs the teacher to approve again before publishing.
+  const touch = () => {
+    setDirty(true)
+    if (status === 'approved' || status === 'published') setStatus(unapproved)
+  }
+  const content = () => ({ sections, personal: Object.fromEntries(Object.entries(personal).filter(([, text]) => text.trim())), photos })
+  const save = async () => load(await api.classJournals.update(journal.id, { ...content(), issues: decisionsOf(issues) }))
 
   const run = (kind, fn) => async () => {
     setBusy(kind)
@@ -962,61 +942,79 @@ function JournalEditor({ cls, date, day, initialDraft, onClose, onSaved }) {
   }
 
   const saveDraft = run('save', async () => {
-    const res = await save()
-    toast(`Draft saved for ${res.total} children${res.exceptions ? ` (${res.exceptions} exceptions)` : ''}.`)
-    onSaved()
+    await save()
+    toast('Draft saved.')
   })
 
   const approve = run('approve', async () => {
+    if (openIssues.length) return toast(`${openIssues.length} ${openIssues.length === 1 ? 'point still needs' : 'points still need'} your confirmation before approving.`, 'error')
+    if (filled === 0 && personalCount === 0) return toast('Add content to at least one section before approving.', 'error')
     if (dirty) await save()
-    const res = await api.journals.approve(cls.id, date)
+    load(await api.classJournals.approve(journal.id))
+    toast('Journal approved. You can now publish it.')
+  })
+
+  const publish = run('publish', async () => {
+    await api.classJournals.publish(journal.id)
     setConfirm(false)
-    toast(`Journal approved: ${res.approved} entries are now visible to parents.`)
-    onSaved()
+    toast(wasPublished ? 'Changes published. Parents now see the updated journal.' : 'Journal published successfully.')
+    onChanged()
     onClose()
   })
 
-  const addRecording = async ({ transcript, audio }) => {
-    const res = transcript ? await api.journals.fromText({ classId: cls.id, date }, transcript) : await api.journals.fromVoice({ classId: cls.id, date }, audio)
-    setForm((f) => mergeDraft(f, res.draft))
-    setAi((a) => ({
-      transcripts: [...(a?.transcripts || []), res.transcript],
-      audios: audio ? [...(a?.audios || []), URL.createObjectURL(audio)] : a?.audios || [],
-      unrecognized: [...(a?.unrecognized || []), ...res.draft.unrecognizedNames],
-    }))
-    setDirty(true)
-    setRecording(false)
-    toast('Added to the draft. Please review the changes.')
+  const setNote = (id, text) => {
+    setPersonal((p) => ({ ...p, [id]: text }))
+    touch()
   }
 
-  const onPhotos = async (e) => {
+  // Another recording adds to the draft instead of replacing it, and always sends it back to review. Unsaved changes
+  // are saved first, so the server adds the new text to what is on screen.
+  const addRecording = async (draft) => {
+    if (dirty) await save()
+    const res = await api.classJournals.addRecording(journal.id, {
+      sections: draft.sections,
+      personal: draft.personal,
+      transcript: draft.transcript,
+      audioUrl: draft.audio[0],
+      issues: draft.issues,
+    })
+    load(res)
+    setRecording(false)
+    toast('Added to the draft. Please review the new text.')
+  }
+
+  const pickPhotos = async (e) => {
     const files = [...e.target.files].slice(0, Math.max(0, maxPhotos - photos.length))
     e.target.value = ''
     if (!files.length) return
     setBusy('photos')
     try {
-      if (dirty) await save()
-      await api.journals.uploadPhotos({ classId: cls.id, date }, files)
-      toast(`${files.length} photo${files.length > 1 ? 's' : ''} added for the children present.`)
-      onSaved()
+      const { urls } = await api.classJournals.uploadPhotos(files)
+      setPhotos((p) => [...p, ...urls])
+      touch()
     } catch (err) {
       toast(errorText(err), 'error')
     } finally {
       setBusy('')
     }
   }
-  const removePhoto = (p) =>
-    run('photos', async () => {
-      for (const id of p.ids) await api.journals.removePhoto(id)
-      toast('Photo removed.')
-      onSaved()
-    })()
 
-  const openPreview = (studentId) =>
-    run('preview', async () => {
-      const t = await api.journals.timeline(studentId, date, date)
-      setPreview({ studentId, day: t.days[0] || null })
-    })()
+  // The teacher's decision on one point. A held statement goes where the teacher says; nothing else changes text.
+  const resolveIssue = (issue, resolution, childId) => {
+    if (resolution === 'assigned') {
+      const children = [...new Set([...(issue.studentIds || []), childId])]
+      setPersonal((p) => ({ ...p, ...Object.fromEntries(children.map((id) => [id, joinText(p[id], issue.text)])) }))
+    }
+    if (resolution === 'class') setSections((p) => ({ ...p, [issue.section]: joinText(p[issue.section], issue.text) }))
+    // Undoing a correction keeps the earlier statement as well, where it was.
+    if (resolution === 'reverted') {
+      const [child] = issue.studentIds || []
+      if (child) setPersonal((p) => ({ ...p, [child]: joinText(issue.previousText, p[child]) }))
+      else setSections((p) => ({ ...p, [issue.section]: joinText(issue.previousText, p[issue.section]) }))
+    }
+    setIssues((list) => list.map((i) => (i.id === issue.id ? { ...i, status: 'resolved', resolution, assignedTo: resolution === 'assigned' ? [childId] : [] } : i)))
+    touch()
+  }
 
   return (
     <div className="narrow wide">
@@ -1026,108 +1024,169 @@ function JournalEditor({ cls, date, day, initialDraft, onClose, onSaved }) {
             <ArrowLeft size={16} /> Daily Journal
           </button>
         }
-        title={`Journal · ${dayLabel(date)}`}
-        subtitle={`${cls.name} · ${fmtLongDate(date)} · ${summary.total} children`}
-        actions={<StatusBadge status={dirty ? 'Draft' : state} />}
+        title={`Journal · ${dayLabel(journal.date)}`}
+        subtitle={`${cls.name} · ${fmtLongDate(journal.date)}`}
+        actions={<StatusBadge status={JOURNAL_STATUS[status]} />}
       />
 
-      {ai && (
+      {voice && status === 'review' && (
         <div className="alert alert-info">
           <Sparkles size={18} />
           <span>
-            <strong>AI-generated draft — please review.</strong> Check the class form and every exception, correct mistakes and add what is missing. Nothing reaches parents until
-            you approve.
-            {ai.unrecognized.length > 0 && <> Names the AI could not match: {ai.unrecognized.join(', ')}.</>}
+            <strong>AI-generated draft — Please review.</strong> Check every section, correct mistakes and add what is missing. Nothing is sent to parents until you approve and
+            publish.
           </span>
         </div>
       )}
+
+      {wasPublished && (
+        <div className="alert alert-info">
+          <Send size={18} />
+          <span>
+            {status === 'published' ? (
+              <>
+                <strong>This journal is published.</strong> You can still change it. Parents keep seeing the published version until you approve and publish your changes.
+              </>
+            ) : (
+              <>
+                <strong>Changed after publishing.</strong> Parents still see the published version. Approve and publish to send them the update.
+              </>
+            )}
+          </span>
+        </div>
+      )}
+
+      {openIssues.length > 0 && <ReviewIssues issues={openIssues} students={students} onResolve={resolveIssue} />}
 
       {db.settings.aiJournal && (
         <div className="card">
           <div className="row-between">
             <span>
-              <strong>{ai ? 'Forgot something?' : 'Prefer to speak?'}</strong>
-              <span className="muted block small">Record {ai ? 'again' : 'with your voice'}: notes are added to the form and named children become exceptions.</span>
+              <strong>{voice ? 'Forgot something?' : 'Prefer to speak?'}</strong>
+              <span className="muted block small">Record {voice ? 'again' : 'with your voice'}: the new text is added to this draft, nothing is replaced.</span>
             </span>
             <button className="btn" onClick={() => setRecording(true)}>
-              <Mic size={18} /> {ai ? 'Record more' : 'Record with voice'}
+              <Mic size={18} /> {voice ? 'Record more' : 'Record with voice'}
             </button>
           </div>
-          {ai && (
+          {voice && journal.transcript && (
             <details>
               <summary>
-                <strong>What you said</strong> <span className="muted small">— transcript sent to the AI</span>
+                <strong>What you said</strong> <span className="muted small">— transcript of your recording{audios.length > 1 ? 's' : ''}</span>
               </summary>
-              {ai.audios.map((url) => (
+              {audios.map((url) => (
                 <audio key={url} className="rec-audio" controls src={url} />
               ))}
-              {ai.transcripts.map((t, i) => (
-                <p key={i} className="transcript">
-                  {t}
-                </p>
-              ))}
+              <p className="transcript">{journal.transcript}</p>
             </details>
           )}
         </div>
       )}
 
-      <ClassForm value={form.defaults} onChange={(defaults) => update((f) => ({ ...f, defaults }))} />
+      <div className="card">
+        <div className="card-head">
+          <h2>For the whole class</h2>
+          <span className="chip">
+            <Users size={14} /> All parents of {cls.name}
+          </span>
+        </div>
+        {JOURNAL_SECTIONS.map((s) => {
+          const Icon = SECTION_ICON[s.key]
+          return (
+            <div key={s.key} className="j-section">
+              <div className="j-section-head">
+                <span>
+                  <Icon size={18} /> <label htmlFor={`j-${s.key}`}>{s.label}</label>
+                </span>
+                {sections[s.key] && (
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => {
+                      setSections((p) => ({ ...p, [s.key]: '' }))
+                      touch()
+                    }}
+                  >
+                    <Eraser size={14} /> Clear
+                  </button>
+                )}
+              </div>
+              <textarea
+                id={`j-${s.key}`}
+                rows={s.key === 'note' ? 3 : 2}
+                value={sections[s.key]}
+                placeholder={s.key === 'note' ? 'Reminders and notes for all parents of the class' : `Write about ${s.label.toLowerCase()}`}
+                onChange={(e) => {
+                  setSections((p) => ({ ...p, [s.key]: e.target.value }))
+                  touch()
+                }}
+              />
+            </div>
+          )
+        })}
+      </div>
 
       <div className="card">
         <div className="card-head">
-          <h2>Exceptions</h2>
+          <h2>For individual children</h2>
           <span className="chip">
-            <Lock size={14} /> {exceptionIds.length} of {roster.length} children differ from the class
+            <Lock size={14} /> Only that child's parents
           </span>
         </div>
-        <span className="muted small">Only fill in what is different for that child. Empty fields keep the class value.</span>
-        {exceptionIds.map((id) => (
-          <ExceptionRow
-            key={id}
-            student={byStudent[id]}
-            value={form.exceptions[id]}
-            warnings={warnings[id]}
-            onChange={(v) => setException(id, v)}
-            onRemove={() => removeException(id)}
-          />
-        ))}
-        {exceptionIds.length < roster.length && (
-          <div className="cell-user">
-            <UserPlus size={18} />
-            <Select
-              value=""
-              onChange={(id) => id && setException(id, {})}
-              options={roster.filter((s) => !form.exceptions[s.id]).map((s) => ({ value: s.id, label: `${s.fullName}${s.allergies ? ' ⚠' : ''}` }))}
-              placeholder="Add an exception for a child…"
-              aria-label="Add an exception for a child"
-            />
-          </div>
-        )}
-        {Object.entries(warnings)
-          .filter(([id]) => !form.exceptions[id])
-          .map(([id, msgs]) => (
-            <div key={id} className="exc-warn">
-              <AlertTriangle size={14} /> {byStudent[id]?.fullName}: {msgs.join(' · ')}
+        <span className="muted small">When you say a child's name while recording, that sentence lands here instead of in the class journal.</span>
+        {noted.map((s) => (
+          <div key={s.id} className="j-section">
+            <div className="j-section-head">
+              <span>
+                <Avatar name={s.name} src={s.photo} size={28} /> <label htmlFor={`p-${s.id}`}>{s.name}</label>
+                {absentIds.has(s.id) && <span className="chip">Absent this day</span>}
+              </span>
+              <button
+                className="btn btn-sm"
+                onClick={() => {
+                  setPersonal(({ [s.id]: _removed, ...rest }) => rest)
+                  touch()
+                }}
+              >
+                <Eraser size={14} /> Remove
+              </button>
             </div>
-          ))}
+            <textarea id={`p-${s.id}`} rows={2} value={personal[s.id]} placeholder={`A note only ${s.name}'s parents will see`} onChange={(e) => setNote(s.id, e.target.value)} />
+          </div>
+        ))}
+        {noted.length < students.length && (
+          <Select
+            value=""
+            onChange={(id) => id && setNote(id, '')}
+            options={students.filter((s) => !(s.id in personal)).map((s) => ({ value: s.id, label: s.name }))}
+            placeholder="Add a note for a child…"
+            aria-label="Add a note for a child"
+          />
+        )}
       </div>
 
       <div className="card">
         <div className="card-head">
           <h2>Photos</h2>
           <span className="muted small">
-            {photos.length} of {maxPhotos} · shared with the families of the children present
+            {photos.length} of {maxPhotos}
           </span>
         </div>
         <div className="photos">
-          {photos.map((p) => (
-            <PhotoTile key={p.url} src={p.url} onRemove={busy ? undefined : () => removePhoto(p)} />
+          {photos.map((p, i) => (
+            <PhotoTile
+              key={p}
+              src={p}
+              onRemove={() => {
+                setPhotos((list) => list.filter((_, j) => j !== i))
+                touch()
+              }}
+            />
           ))}
           {photos.length < maxPhotos && (
-            <label className={`photo photo-add ${busy === 'photos' ? 'disabled' : ''}`}>
+            <label className="photo photo-add">
               <ImagePlus size={24} />
               <span>{busy === 'photos' ? 'Uploading…' : 'Add photo'}</span>
-              <input type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={onPhotos} disabled={!!busy} />
+              <input type="file" accept="image/*" multiple hidden onChange={pickPhotos} disabled={busy === 'photos'} />
             </label>
           )}
         </div>
@@ -1138,35 +1197,49 @@ function JournalEditor({ cls, date, day, initialDraft, onClose, onSaved }) {
           <Sparkles size={16} /> AI suggests <ArrowRight size={14} /> Teacher verifies <ArrowRight size={14} /> <strong>Teacher decides</strong>
         </div>
         <div className="editor-actions">
-          <button className="btn" onClick={saveDraft} disabled={!!busy}>
+          <button className="btn" disabled={!!busy || status === 'published'} onClick={saveDraft}>
             <Save size={18} /> {busy === 'save' ? 'Saving…' : 'Save Draft'}
           </button>
-          <Select
-            value=""
-            onChange={(id) => id && openPreview(id)}
-            options={roster.map((s) => ({ value: s.id, label: s.fullName }))}
-            placeholder={dirty ? 'Preview (save first)' : 'Preview as a parent…'}
-            aria-label="Preview as the parent of"
-            disabled={dirty || !!busy}
-          />
-          <button className="btn btn-primary" onClick={() => setConfirm(true)} disabled={!!busy || (state === 'Approved' && !dirty)}>
-            <Send size={18} /> {state === 'Approved' && !dirty ? 'Approved' : 'Approve & Publish'}
+          <button className="btn" onClick={() => setPreview(true)}>
+            <Eye size={18} /> Preview
+          </button>
+          <button className="btn" onClick={approve} disabled={!!busy || (status === 'approved' && !dirty) || status === 'published' || openIssues.length > 0}>
+            <CheckCircle2 size={18} /> {busy === 'approve' ? 'Approving…' : status === 'approved' ? 'Approved' : 'Approve'}
+          </button>
+          <button className="btn btn-primary" onClick={() => setConfirm(true)} disabled={!!busy || status !== 'approved' || dirty}>
+            <Send size={18} /> {wasPublished ? 'Publish Changes' : 'Publish'}
           </button>
         </div>
-        <span className="muted small">Saving keeps everything as a draft. Parents see the journal only after you approve it; any later change needs approval again.</span>
+        {openIssues.length > 0 ? (
+          <span className="muted small">Confirm the {openIssues.length === 1 ? 'point' : `${openIssues.length} points`} above to enable approving.</span>
+        ) : (
+          status !== 'approved' && status !== 'published' && <span className="muted small">Approve the journal after reviewing it to enable publishing.</span>
+        )}
       </div>
 
-      <Modal open={!!preview} title={`Preview — ${byStudent[preview?.studentId]?.fullName || ''}`} onClose={() => setPreview(null)}>
-        {preview && (preview.day ? <DayTimeline day={preview.day} /> : <EmptyState title="Nothing saved for this child yet." soft />)}
+      <Modal open={preview} title="Preview — as parents will see it" onClose={() => setPreview(false)}>
+        {filled === 0 && personalCount === 0 && photos.length === 0 ? (
+          <EmptyState title="Nothing to preview yet." text="Write at least one section first." />
+        ) : (
+          <JournalTimeline journal={content()} students={students} />
+        )}
       </Modal>
 
       <Modal open={recording} title="Record more" onClose={() => setRecording(false)}>
-        {recording && <Recorder onDone={addRecording} onCancel={() => setRecording(false)} />}
+        {recording && (
+          <Recorder
+            classId={cls.id}
+            journalId={journal.id}
+            date={journal.date}
+            onDone={(d) => addRecording(d).catch((e) => toast(errorText(e), 'error'))}
+            onCancel={() => setRecording(false)}
+          />
+        )}
       </Modal>
 
       <Modal
         open={confirm}
-        title="Approve and publish this journal to parents?"
+        title={wasPublished ? 'Publish these changes to parents?' : 'Ready to publish this journal to parents?'}
         onClose={() => setConfirm(false)}
         size="sm"
         footer={
@@ -1174,8 +1247,8 @@ function JournalEditor({ cls, date, day, initialDraft, onClose, onSaved }) {
             <button className="btn" onClick={() => setConfirm(false)}>
               Cancel
             </button>
-            <button className="btn btn-primary" onClick={approve} disabled={!!busy}>
-              {busy === 'approve' ? 'Publishing…' : 'Approve & Publish'}
+            <button className="btn btn-primary" onClick={publish} disabled={busy === 'publish'}>
+              {busy === 'publish' ? 'Publishing…' : 'Publish Journal'}
             </button>
           </>
         }
@@ -1187,23 +1260,27 @@ function JournalEditor({ cls, date, day, initialDraft, onClose, onSaved }) {
           </div>
           <div>
             <dt>Date</dt>
-            <dd>{fmtDate(date)}</dd>
+            <dd>{fmtDate(journal.date)}</dd>
           </div>
           <div>
-            <dt>Children</dt>
-            <dd>{roster.length}</dd>
+            <dt>Completed sections</dt>
+            <dd>
+              {filled} of {JOURNAL_SECTIONS.length}
+            </dd>
           </div>
           <div>
-            <dt>Exceptions</dt>
-            <dd>{exceptionIds.length}</dd>
+            <dt>Individual notes</dt>
+            <dd>{personalCount ? `${personalCount} (private to each family)` : 'None'}</dd>
           </div>
           <div>
             <dt>Photos</dt>
             <dd>{photos.length}</dd>
           </div>
           <div>
-            <dt>Unsaved changes</dt>
-            <dd>{dirty ? 'Will be saved first' : 'None'}</dd>
+            <dt>Status</dt>
+            <dd>
+              <StatusBadge status={JOURNAL_STATUS[status]} />
+            </dd>
           </div>
         </dl>
       </Modal>
@@ -1223,61 +1300,90 @@ function JournalEditor({ cls, date, day, initialDraft, onClose, onSaved }) {
 
 const HISTORY_TABS = [
   { key: 'all', label: 'All', match: () => true },
-  { key: 'draft', label: 'Drafts', match: (h) => h.draft > 0 },
-  { key: 'approved', label: 'Approved', match: (h) => h.draft === 0 },
+  { key: 'draft', label: 'Drafts', match: (j) => j.status === 'draft' },
+  { key: 'review', label: 'Needs Review', match: (j) => j.status === 'review' || j.status === 'approved' },
+  { key: 'published', label: 'Published', match: (j) => j.status === 'published' },
 ]
 
 export function DailyJournalPage() {
+  const cls = useMyClass()
+  if (!cls) return <NoClass />
+  return <JournalWorkspace cls={cls} />
+}
+
+function JournalWorkspace({ cls }) {
   const { db } = useStore()
   const toast = useToast()
-  const cls = useMyClass()
   const today = todayISO()
-  const [date, setDate] = useState(today)
-  const [view, setView] = useState({ mode: 'home' }) // home | record | edit
+  const [date, setDate] = useJournalDate()
+  const [view, setView] = useState({ mode: 'home' }) // home | record | edit | read
   const [tab, setTab] = useState('all')
-  const q = useApi(() => (cls ? api.journals.classDay(cls.id, date) : Promise.resolve(null)), [cls?.id, date])
-  const history = useApi(() => (cls ? api.journals.history(cls.id) : Promise.resolve([])), [cls?.id])
-  if (!cls) return <NoClass />
+  const list = useApi(() => api.classJournals.list(cls.id), [cls.id])
+  // The day's register: the children of the class and who was absent.
+  const day = useApi(() => api.journals.classDay(cls.id, date), [cls.id, date])
+  const opened = useApi(() => (view.id ? api.classJournals.get(view.id) : Promise.resolve(null)), [view.id, view.mode])
 
   const aiOn = db.settings.aiJournal
-  const summary = q.data?.summary
-  const state = journalState(summary)
-  const shown = (history.data || []).filter(HISTORY_TABS.find((t) => t.key === tab).match)
-  const reloadAll = () => {
-    q.reload()
-    history.reload()
+  const history = list.data?.items || []
+  const journal = history.find((j) => j.date === date)
+  const shown = history.filter(HISTORY_TABS.find((t) => t.key === tab).match)
+  const students = (day.data?.students || []).map(({ student }) => ({ id: student.id, name: student.fullName, photo: student.avatarUrl }))
+  const absentIds = new Set((day.data?.students || []).filter(({ journal: j }) => j?.attendance === 'ABSENT').map(({ student }) => student.id))
+
+  const create = async (source, { audioUrl: _local, ...draft } = {}) => {
+    try {
+      const j = await api.classJournals.create({ classId: cls.id, date, source, ...draft })
+      list.reload()
+      setView({ mode: 'edit', id: j.id })
+      if (source === 'voice') toast('Draft ready. Please review it.')
+    } catch (e) {
+      toast(errorText(e), 'error')
+      if (e.status === 409) list.reload()
+    }
   }
+  const open = (j) => {
+    setDate(j.date)
+    setView({ mode: j.status === 'published' ? 'read' : 'edit', id: j.id })
+  }
+  const home = () => setView({ mode: 'home' })
 
   if (view.mode === 'record')
     return (
       <div className="narrow">
         <PageHeader title="Record with Voice" subtitle={`${cls.name} · ${fmtLongDate(date)}`} />
-        <Recorder
-          onCancel={() => setView({ mode: 'home' })}
-          onDone={async ({ transcript, audio }) => {
-            const res = transcript ? await api.journals.fromText({ classId: cls.id, date }, transcript) : await api.journals.fromVoice({ classId: cls.id, date }, audio)
-            setView({ mode: 'edit', draft: { ...res, audioUrl: audio ? URL.createObjectURL(audio) : null } })
-            toast('Draft ready. Please review it.')
-          }}
-        />
+        <Recorder classId={cls.id} date={date} onCancel={home} onDone={(draft) => create('voice', draft)} />
       </div>
     )
 
-  if (view.mode === 'edit')
-    // Wait for the selected day (the previous day's data is kept while a new one loads).
-    return q.data?.date === date ? (
-      <JournalEditor
-        key={`${date}-${view.draft ? 'ai' : 'form'}`}
-        cls={cls}
-        date={date}
-        day={q.data}
-        initialDraft={view.draft}
-        onSaved={reloadAll}
-        onClose={() => setView({ mode: 'home' })}
-      />
-    ) : (
-      <SkeletonTable />
+  if (view.mode === 'edit' || view.mode === 'read') {
+    const current = opened.data
+    if (!current || current.id !== view.id || !day.data || day.data.date !== current.date) return <SkeletonTable />
+    if (view.mode === 'edit') return <JournalEditor key={current.id} cls={cls} students={students} absentIds={absentIds} initial={current} onChanged={list.reload} onClose={home} />
+    return (
+      <div className="narrow wide">
+        <PageHeader
+          back={
+            <button className="back-link" onClick={home}>
+              <ArrowLeft size={16} /> Daily Journal
+            </button>
+          }
+          title={`Journal · ${dayLabel(current.date)}`}
+          subtitle={`${cls.name} · published ${relTime(current.publishedAt)}${current.editedAt ? ` · updated ${relTime(current.editedAt)}` : ''}`}
+          actions={
+            <>
+              <StatusBadge status="Published" />
+              <button className="btn" onClick={() => setView({ mode: 'edit', id: current.id })}>
+                <PenLine size={18} /> Edit Journal
+              </button>
+            </>
+          }
+        />
+        <div className="card">
+          <JournalTimeline journal={current} students={students} />
+        </div>
+      </div>
     )
+  }
 
   return (
     <>
@@ -1288,7 +1394,7 @@ export function DailyJournalPage() {
       />
 
       <Loadable
-        q={q}
+        q={list}
         skeleton={
           <section className="card">
             <Skeleton h={90} />
@@ -1296,34 +1402,29 @@ export function DailyJournalPage() {
         }
       >
         {() =>
-          summary.logged > 0 ? (
+          journal ? (
             <section className="card">
               <div className="row-between">
                 <div>
                   <h2>Journal for {date === today ? 'today' : fmtDate(date)}</h2>
                   <span className="muted small">
-                    {summary.logged} of {summary.total} children · {summary.approved} approved · {summary.draft} draft · {summary.absent} absent
+                    {journal.source === 'voice' ? 'Created with voice (AI-assisted)' : 'Written manually'} · last edited {relTime(journal.updatedAt)}
                   </span>
                 </div>
-                <StatusBadge status={state} />
+                <StatusBadge status={JOURNAL_STATUS[journal.status]} />
               </div>
-              <div className="cell-user">
-                <button className="btn btn-primary" onClick={() => setView({ mode: 'edit' })}>
-                  {state === 'Approved' ? (
+              <div>
+                <button className="btn btn-primary" onClick={() => open(journal)}>
+                  {journal.status === 'published' ? (
                     <>
-                      <Eye size={18} /> Open Journal
+                      <Eye size={18} /> View Journal
                     </>
                   ) : (
                     <>
-                      <PenLine size={18} /> {summary.draft ? 'Review & Approve' : 'Continue'}
+                      <PenLine size={18} /> {journal.status === 'review' ? 'Review Draft' : 'Continue Editing'}
                     </>
                   )}
                 </button>
-                {aiOn && (
-                  <button className="btn" onClick={() => setView({ mode: 'record' })}>
-                    <Mic size={18} /> Record more
-                  </button>
-                )}
               </div>
             </section>
           ) : (
@@ -1335,17 +1436,15 @@ export function DailyJournalPage() {
                   </span>
                   <strong>Record with Voice</strong>
                   <span className="muted">
-                    {aiOn
-                      ? 'Describe the day in Vietnamese. AI fills in the class form and the exceptions for you to review.'
-                      : 'AI-assisted drafts are turned off by the system administrator.'}
+                    {aiOn ? 'Describe the day in Vietnamese. AI prepares a draft for you to review and edit.' : 'AI-assisted drafts are turned off by the system administrator.'}
                   </span>
                 </button>
-                <button className="choice" onClick={() => setView({ mode: 'edit' })}>
+                <button className="choice" onClick={() => create('manual')}>
                   <span className="action-icon tint-cream">
                     <PenLine size={24} />
                   </span>
-                  <strong>Fill in the Class Form</strong>
-                  <span className="muted">Set what the whole class did once, then mark only the 2–3 children who were different.</span>
+                  <strong>Write Manually</strong>
+                  <span className="muted">Type each section yourself: meal, learning, sleep, health, emotion and notes.</span>
                 </button>
               </div>
               <div className="principle">
@@ -1365,11 +1464,11 @@ export function DailyJournalPage() {
           </button>
         ))}
       </div>
-      <Loadable q={history} skeleton={<SkeletonTable rows={4} />}>
+      <Loadable q={list} skeleton={<SkeletonTable rows={4} />}>
         {() =>
           shown.length === 0 ? (
             <div className="card">
-              <EmptyState icon={BookOpen} title={history.data.length === 0 ? 'No journals yet.' : 'No journals with this status.'} />
+              <EmptyState icon={BookOpen} title={history.length === 0 ? 'No journals yet.' : 'No journals with this status.'} />
             </div>
           ) : (
             <div className="card table-card">
@@ -1377,36 +1476,27 @@ export function DailyJournalPage() {
                 <thead>
                   <tr>
                     <th>Date</th>
-                    <th>Entries</th>
+                    <th>Class</th>
                     <th>Status</th>
-                    <th>Created with</th>
                     <th>Last edited</th>
                     <th className="th-actions">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {shown.map((h) => (
-                    <tr key={h.date}>
+                  {shown.map((j) => (
+                    <tr key={j.id}>
                       <td data-label="Date" className="td-primary">
-                        {dayLabel(h.date)}
+                        {dayLabel(j.date)}
                       </td>
-                      <td data-label="Entries">
-                        {h.logged} · {h.absent} absent
-                      </td>
+                      <td data-label="Class">{cls.name}</td>
                       <td data-label="Status">
-                        <StatusBadge status={h.draft ? (h.approved ? 'In Progress' : JOURNAL_STATE.DRAFT) : JOURNAL_STATE.APPROVED} />
+                        <StatusBadge status={JOURNAL_STATUS[j.status]} />
+                        {j.unpublishedChanges && <span className="muted block small">Published before · changes not sent yet</span>}
                       </td>
-                      <td data-label="Created with">{h.voice ? 'Voice (AI-assisted)' : 'Class form'}</td>
-                      <td data-label="Last edited">{relTime(new Date(h.updatedAt).getTime())}</td>
+                      <td data-label="Last edited">{relTime(j.updatedAt)}</td>
                       <td data-label="Actions" className="td-plain" style={{ textAlign: 'right' }}>
-                        <button
-                          className="btn btn-sm"
-                          onClick={() => {
-                            setDate(h.date)
-                            setView({ mode: 'edit' })
-                          }}
-                        >
-                          Open
+                        <button className="btn btn-sm" onClick={() => open(j)}>
+                          {j.status === 'published' ? 'View' : 'Open'}
                         </button>
                       </td>
                     </tr>

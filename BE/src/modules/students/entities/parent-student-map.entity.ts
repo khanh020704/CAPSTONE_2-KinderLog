@@ -1,5 +1,5 @@
 import { Column, CreateDateColumn, Entity, Index, JoinColumn, ManyToOne, PrimaryColumn } from 'typeorm';
-import { Relationship } from '../../../common/enums';
+import { RecordStatus, Relationship } from '../../../common/enums';
 import type { User } from '../../users/entities/user.entity';
 import type { Student } from './student.entity';
 
@@ -27,6 +27,10 @@ export class ParentStudentMap {
   /** The contact the school calls first. */
   @Column({ name: 'is_primary', default: false })
   isPrimary: boolean;
+
+  /** INACTIVE keeps the record but the parent no longer sees this child (journal, camera, messages). */
+  @Column({ type: 'simple-enum', enum: RecordStatus, default: RecordStatus.ACTIVE })
+  status: RecordStatus;
 
   @CreateDateColumn({ name: 'created_at', type: 'datetime2' })
   createdAt: Date;

@@ -29,7 +29,7 @@ import {
   Video,
   X,
 } from 'lucide-react'
-import { ROLES, unreadMessages, unreadNotifications, useStore } from '../store/store'
+import { ROLES, useStore } from '../store/store'
 import { Avatar, ConfirmDialog, Logo } from './ui'
 
 const NAV = {
@@ -109,15 +109,16 @@ const PARENT_TABS = [
 ]
 
 export function RequireRole({ role, children }) {
-  const { user } = useStore()
+  const { user, checking } = useStore()
+  // A remembered token is re-validated first (a fraction of a second), so the screens never load data with an expired one.
+  if (checking) return null
   if (!user) return <Navigate to="/login" replace />
   if (user.role !== role) return <Navigate to={ROLES[user.role].home} replace />
   return children
 }
 
 function useBadges() {
-  const { db, user } = useStore()
-  return { messages: unreadMessages(db, user), notifications: unreadNotifications(db, user) }
+  return useStore().counts
 }
 
 function useLogout() {
@@ -205,7 +206,7 @@ export function AppShell({ role }) {
           </Link>
           <div className="topbar-spacer" />
           {role === 'teacher' && (
-            <Link to="/teacher/notifications" className="icon-btn bell" aria-label="Notifications">
+            <Link to={`${base}/notifications`} className="icon-btn bell" aria-label="Notifications">
               <Bell size={20} />
               <Count n={badges.notifications} />
             </Link>

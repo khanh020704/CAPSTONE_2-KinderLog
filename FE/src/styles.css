@@ -468,6 +468,13 @@ input[type='checkbox'] {
   border-color: var(--brand);
   box-shadow: 0 0 0 3px var(--brand-soft);
 }
+/* The magnifier / clear icons keep their size, so a narrow box squeezes the text, never the icon over it. */
+.search > svg,
+.combo-control > svg,
+.search > .icon-btn,
+.combo-control > .icon-btn {
+  flex-shrink: 0;
+}
 .search input,
 .input-affix input,
 .combo-control input {
@@ -486,7 +493,7 @@ input[type='checkbox'] {
 }
 .combo-list {
   position: absolute;
-  z-index: 10;
+  z-index: 50;
   left: 0;
   right: 0;
   top: calc(100% + 4px);
@@ -499,6 +506,10 @@ input[type='checkbox'] {
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: var(--shadow);
+}
+.combo-list.up {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 .combo-item {
   display: flex;
@@ -546,6 +557,10 @@ input[type='checkbox'] {
 .alert-error {
   background: var(--error-bg);
   color: var(--error);
+}
+.alert-warning {
+  background: var(--warning-bg);
+  color: var(--warning);
 }
 .alert-info {
   background: var(--lav-bg);
@@ -708,6 +723,29 @@ input[type='checkbox'] {
   margin: 0;
   font-weight: 700;
   overflow-wrap: anywhere;
+}
+
+/* Admin dashboard: one block per school (name, address, status, then the key counts) */
+.school-overview {
+  gap: 0;
+}
+.school-overview > li {
+  display: grid;
+  gap: 16px;
+  padding: 16px 0;
+}
+.school-overview > li:first-child {
+  padding-top: 4px;
+}
+.school-overview > li + li {
+  border-top: 1px solid var(--border);
+}
+.school-overview-head {
+  align-items: flex-start;
+}
+.school-overview-name {
+  display: block;
+  font-size: 1.12rem;
 }
 
 .activity {
@@ -1477,17 +1515,6 @@ input[type='checkbox'] {
   justify-content: space-between;
   gap: 12px;
 }
-.demo-hint {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 20px;
-  padding: 12px 14px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 12px;
-  background: var(--surface-2);
-}
 .auth-foot {
   margin-top: 16px;
   font-size: 0.92rem;
@@ -2082,6 +2109,13 @@ input[type='checkbox'] {
   margin: 0;
   overflow-y: auto;
   text-align: left;
+}
+.rec-text {
+  width: 100%;
+  min-height: 140px;
+  text-align: left;
+  line-height: 1.6;
+  resize: vertical;
 }
 .rec-audio {
   display: block;
@@ -3395,6 +3429,10 @@ strong,
   .j-grid {
     grid-template-columns: 1fr;
   }
+}
+/* Chart tooltips float above the page's icons and sticky bars (topbar 20, tabbar 30), below drawers and dialogs. */
+.recharts-tooltip-wrapper {
+  z-index: 40;
 }
 .chart-tip {
   display: grid;

@@ -1,12 +1,12 @@
 /**
- * Demo data matching FE/src/store/seed.js (same names, phone numbers and password) plus two weeks of
- * journals so the dashboard and reports have something to show. Re-runnable: it wipes all tables first.
- *
- *   npm run seed
+ * Test fixture for the E2E suite only (never loaded by the app): two schools, classes, teachers, parents and two weeks
+ * of journals, so permissions, dashboards and reports can be checked against known numbers. It wipes the test
+ * database first.
  */
 import * as bcrypt from 'bcryptjs';
 import {
   AttendanceStatus,
+  ClassJournalStatus,
   Gender,
   HealthStatus,
   JournalSource,
@@ -17,17 +17,19 @@ import {
   Relationship,
   SleepQuality,
   UserRole,
-} from '../../common/enums';
-import { addDays, isoDate, weekdayOf } from '../../common/utils/date.util';
-import { CameraStream } from '../../modules/camera-streams/entities/camera-stream.entity';
-import { ClassEntity } from '../../modules/classes/entities/class.entity';
-import { DailyJournal } from '../../modules/daily-journals/entities/daily-journal.entity';
-import { JournalPhoto } from '../../modules/daily-journals/entities/journal-photo.entity';
-import { School } from '../../modules/schools/entities/school.entity';
-import { ParentStudentMap } from '../../modules/students/entities/parent-student-map.entity';
-import { Student } from '../../modules/students/entities/student.entity';
-import { User } from '../../modules/users/entities/user.entity';
-import dataSource from '../data-source';
+} from '../../src/common/enums';
+import { addDays, isoDate, weekdayOf } from '../../src/common/utils/date.util';
+import { CameraStream } from '../../src/modules/camera-streams/entities/camera-stream.entity';
+import { ClassEntity } from '../../src/modules/classes/entities/class.entity';
+import { ClassJournal } from '../../src/modules/daily-journals/entities/class-journal.entity';
+import { DailyJournal } from '../../src/modules/daily-journals/entities/daily-journal.entity';
+import { JournalPhoto } from '../../src/modules/daily-journals/entities/journal-photo.entity';
+import { School } from '../../src/modules/schools/entities/school.entity';
+import { ParentStudentMap } from '../../src/modules/students/entities/parent-student-map.entity';
+import { Student } from '../../src/modules/students/entities/student.entity';
+import { User } from '../../src/modules/users/entities/user.entity';
+import { cleanDatabase } from '../../src/database/clean-database';
+import dataSource from '../../src/database/data-source';
 
 type Row = [student: string, dob: string, gender: 'Male' | 'Female', parent: string, rel: string];
 
@@ -120,27 +122,14 @@ const MEALS = [
 ];
 const PHOTOS = ['drawing', 'meal', 'play', 'book', 'music'];
 
-export async function runSeed({ quiet = false } = {}) {
+export async function loadDemoData() {
   if (!dataSource.isInitialized) await dataSource.initialize();
   const tz = process.env.APP_TIMEZONE ?? 'Asia/Ho_Chi_Minh';
   const today = isoDate(tz);
   const passwordHash = await bcrypt.hash(process.env.DEFAULT_PASSWORD ?? '123456', 10);
 
+  await cleanDatabase(dataSource);
   await dataSource.transaction(async (tx) => {
-    // Children before parents: SQL Server has no TRUNCATE … CASCADE.
-    for (const table of [
-      'journal_photos',
-      'daily_journals',
-      'camera_streams',
-      'parent_student_map',
-      'students',
-      'classes',
-      'users',
-      'schools',
-    ]) {
-      await tx.query(`DELETE FROM ${table}`);
-    }
-
     const user = (u: Partial<User>) =>
       tx.getRepository(User).create({ passwordHash, status: RecordStatus.ACTIVE, ...u });
 
@@ -159,7 +148,7 @@ export async function runSeed({ quiet = false } = {}) {
     });
 
     // ---- staff ----
-    const [, , t1, t2] = await tx.getRepository(User).save([
+    const [, principal, t1, t2] = await tx.getRepository(User).save([
       user({
         fullName: 'Lê Quang Huy',
         phone: '0901000001',
@@ -298,6 +287,7 @@ export async function runSeed({ quiet = false } = {}) {
     const rand = rng(42);
     const pick = <T>(xs: readonly T[]) => xs[Math.floor(rand() * xs.length)];
     const journals: DailyJournal[] = [];
+    const classJournals: ClassJournal[] = [];
     for (let back = 14; back >= 1; back--) {
       const date = addDays(today, -back);
       if (weekdayOf(date) > 5) continue;
@@ -309,6 +299,37 @@ export async function runSeed({ quiet = false } = {}) {
         const meal = pick(MEALS);
         // In the last 3 days Mặt Trời 2 forgot to approve, which shows up in the submission rate.
         const approved = !(cls === c2 && back <= 3 && rand() < 0.6);
+        // The class journal of the day (Mặt Trời 1 only: Mặt Trời 2 is the class the journal tests write in).
+        if (cls === c1) {
+          const sections = {
+            meal: `Bữa trưa: ${meal}`,
+            learning: lesson,
+            sleep: 'Các con ngủ trưa khoảng 90 phút.',
+            health: 'Sức khỏe các con bình thường.',
+            emotion: 'Các con vui vẻ, hào hứng.',
+            note: '',
+          };
+          const photos = [
+            `https://picsum.photos/seed/kinder-${date}-${PHOTOS[Number(date.slice(-1)) % PHOTOS.length]}/800/600`,
+          ];
+          classJournals.push(
+            tx.getRepository(ClassJournal).create({
+              classId: cls.id,
+              journalDate: date,
+              ...sections,
+              note: null,
+              photos,
+              status: ClassJournalStatus.PUBLISHED,
+              source: pick([JournalSource.MANUAL, JournalSource.VOICE]),
+              revision: 1,
+              approvedAt: new Date(`${date}T16:00:00+07:00`),
+              publishedAt: new Date(`${date}T16:30:00+07:00`),
+              publishedVersion: { sections, personal: {}, photos, publishedAt: `${date}T09:30:00.000Z` },
+              createdById: teacher.id,
+              updatedById: teacher.id,
+            }),
+          );
+        }
         for (const s of students.filter((x) => x.classId === cls.id)) {
           const r = rand();
           const absent = r < 0.06;
@@ -334,12 +355,15 @@ export async function runSeed({ quiet = false } = {}) {
               healthNote: sick ? 'Bé hơi sốt nhẹ, cô đã báo phụ huynh.' : null,
               mood: absent ? null : sick ? Mood.TIRED : pick([Mood.HAPPY, Mood.HAPPY, Mood.CALM]),
               teacherNote: null,
-              status: approved ? JournalStatus.APPROVED : JournalStatus.DRAFT,
+              status: approved ? JournalStatus.PUBLISHED : JournalStatus.DRAFT,
               source: pick([JournalSource.BULK, JournalSource.VOICE]),
               isException: sick || absent,
               createdById: teacher.id,
-              approvedById: approved ? teacher.id : null,
+              submittedAt: approved ? new Date(`${date}T16:00:00+07:00`) : null,
+              approvedById: approved ? principal.id : null,
               approvedAt: approved ? new Date(`${date}T16:30:00+07:00`) : null,
+              publishedById: approved ? principal.id : null,
+              publishedAt: approved ? new Date(`${date}T16:30:00+07:00`) : null,
             }),
           );
         }
@@ -362,13 +386,14 @@ export async function runSeed({ quiet = false } = {}) {
     }
     // SQL Server allows 2100 parameters per statement: 50 rows x ~25 columns stays below it.
     const saved = await tx.getRepository(DailyJournal).save(journals, { chunk: 50 });
+    await tx.getRepository(ClassJournal).save(classJournals, { chunk: 50 });
 
     // A couple of activity photos on the approved days of Mặt Trời 1.
     const photos = saved
       .filter(
         (j) =>
           j.classId === c1.id &&
-          j.status === JournalStatus.APPROVED &&
+          j.status === JournalStatus.PUBLISHED &&
           j.attendance === AttendanceStatus.PRESENT,
       )
       .map((j) =>
@@ -380,29 +405,7 @@ export async function runSeed({ quiet = false } = {}) {
         }),
       );
     await tx.getRepository(JournalPhoto).save(photos, { chunk: 200 }); // 5 columns per row
-
-    if (!quiet)
-      console.log(
-        `Seeded: 2 schools, ${students.length} students, ${saved.length} journal entries, ${photos.length} photos`,
-      );
   });
 
-  if (!quiet)
-    console.log(`
-Demo accounts (password: ${process.env.DEFAULT_PASSWORD ?? '123456'})
-  SYSTEM_ADMIN  0901000001  Lê Quang Huy
-  PRINCIPAL     0902000001  Trần Thị Lan      (Mầm non Kinder Stars)
-  TEACHER       0903000001  Nguyễn Thị Mai    (Mặt Trời 1)
-  TEACHER       0903000002  Phạm Thu Hà       (Mặt Trời 2)
-  PARENT        0904000001  Nguyễn Thị Hương  (mẹ bé Nguyễn Minh An – Mặt Trời 1)
-`);
   await dataSource.destroy();
-}
-
-if (require.main === module) {
-  runSeed().catch(async (err) => {
-    console.error(err);
-    await dataSource.destroy().catch(() => undefined);
-    process.exit(1);
-  });
 }

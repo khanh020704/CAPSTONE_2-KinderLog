@@ -1,22 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import {
-  AlertCircle,
-  BookOpen,
-  Camera,
-  Check,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  Megaphone,
-  MessageCircle,
-  MoreHorizontal,
-  Palette,
-  Bell,
-  Search,
-  Shapes,
-  Soup,
-  X,
-} from 'lucide-react'
+import { AlertCircle, BookOpen, Camera, Check, ChevronDown, ChevronLeft, ChevronRight, Megaphone, MessageCircle, MoreHorizontal, Bell, Search, Shapes, X } from 'lucide-react'
 import { initials, norm, relTime, tintOf } from '../lib/utils'
 import { errorText } from '../lib/labels'
 
@@ -43,7 +26,7 @@ export function Avatar({ name, src, size = 40 }) {
 
 const STATUS_TONE = {
   success: ['Active', 'Present', 'Present today', 'Completed', 'Published', 'Current', 'Live Now', 'Success', 'Operational', 'Healthy', 'Approved', 'Enabled'],
-  warning: ['Pending', 'Needs Review', 'Not Started', 'Scheduled', 'Draft', 'In Progress', 'Not recorded', 'Degraded'],
+  warning: ['Pending', 'Not configured', 'Needs Review', 'Not Started', 'Scheduled', 'Draft', 'In Progress', 'Not recorded', 'Degraded'],
   error: ['Failed', 'Locked', 'Inactive', 'Unavailable', 'Absent', 'Absent today', 'Recording', 'Disabled', 'Unlinked'],
 }
 
@@ -197,10 +180,14 @@ export function SearchInput({ value, onChange, placeholder = 'Search' }) {
 }
 
 // Type-to-search picker; stays fast when the list grows because only the top matches render.
+const COMBO_LIST_SPACE = 250 // max-height of .combo-list plus its gap
+const COMBO_LIST_GAP = 8
+const COMBO_LIST_MIN = 120 // about three options; below that the list keeps this height and the dialog scrolls
 export function Combobox({ options, value, onChange, placeholder = 'Search…', emptyText = 'No matches found.' }) {
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
   const [active, setActive] = useState(0)
+  const [place, setPlace] = useState({ up: false, maxHeight: undefined })
   const ref = useRef(null)
   const selected = options.find((o) => o.value === value)
   const results = useMemo(() => {
@@ -213,6 +200,20 @@ export function Combobox({ options, value, onChange, placeholder = 'Search…', 
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
   }, [])
+
+  // Inside a scrolling box (e.g. a dialog) the list opens on the side with more room and never runs past its edge.
+  useLayoutEffect(() => {
+    if (!open || !ref.current) return
+    let box = ref.current.parentElement
+    while (box && !/(auto|scroll|hidden)/.test(getComputedStyle(box).overflowY)) box = box.parentElement
+    const limit = box ? box.getBoundingClientRect() : { top: 0, bottom: window.innerHeight }
+    const r = ref.current.getBoundingClientRect()
+    const below = Math.min(limit.bottom, window.innerHeight) - r.bottom
+    const above = r.top - Math.max(limit.top, 0)
+    const up = below < COMBO_LIST_SPACE && above > below
+    const room = (up ? above : below) - COMBO_LIST_GAP
+    setPlace({ up, maxHeight: room < COMBO_LIST_SPACE ? Math.max(room, COMBO_LIST_MIN) : undefined })
+  }, [open])
 
   const pick = (o) => {
     onChange(o.value)
@@ -260,7 +261,7 @@ export function Combobox({ options, value, onChange, placeholder = 'Search…', 
         )}
       </div>
       {open && (
-        <ul className="combo-list" role="listbox">
+        <ul className={`combo-list ${place.up ? 'up' : ''}`} style={{ maxHeight: place.maxHeight }} role="listbox">
           {results.length === 0 && <li className="combo-empty">{emptyText}</li>}
           {results.map((o, i) => (
             <li
@@ -360,7 +361,7 @@ export function SkeletonCards({ count = 4 }) {
   )
 }
 
-// Mock data resolves instantly; a short delay lets screens show their loading state.
+// Browser-stored data resolves instantly; a short delay lets screens show their loading state.
 export function useFakeLoad(ms = 450) {
   const [loading, setLoading] = useState(true)
   useEffect(() => {
@@ -493,26 +494,11 @@ export function NotificationItem({ n, unread, onClick }) {
   )
 }
 
-const DEMO_PHOTOS = {
-  drawing: { icon: Palette, label: 'Giờ vẽ tranh', tint: 'peach' },
-  meal: { icon: Soup, label: 'Bữa trưa', tint: 'cream' },
-  play: { icon: Shapes, label: 'Giờ chơi', tint: 'mint' },
-  book: { icon: BookOpen, label: 'Giờ kể chuyện', tint: 'lav' },
-}
-
-// Seeded journals reference "demo:<kind>" placeholders; uploaded photos are data URLs.
+// Journal photos: URLs served by the API (/uploads/photos/…) or data URLs of photos just picked.
 export function PhotoTile({ src, onRemove }) {
-  const demo = src.startsWith('demo:') ? DEMO_PHOTOS[src.slice(5)] : null
   return (
-    <div className={`photo ${demo ? `tint-${demo.tint}` : ''}`}>
-      {demo ? (
-        <>
-          <demo.icon size={28} />
-          <span>{demo.label}</span>
-        </>
-      ) : (
-        <img src={src} alt="Journal attachment" />
-      )}
+    <div className="photo">
+      <img src={src} alt="Journal attachment" />
       {onRemove && (
         <button type="button" className="photo-remove" onClick={onRemove} aria-label="Remove photo">
           <X size={14} />

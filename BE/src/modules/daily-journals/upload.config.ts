@@ -5,7 +5,7 @@ import { mkdirSync } from 'fs';
 import { memoryStorage, diskStorage } from 'multer';
 import { extname, join } from 'path';
 
-const uploadRoot = () => process.env.UPLOAD_DIR ?? 'uploads';
+export const uploadRoot = () => process.env.UPLOAD_DIR ?? 'uploads';
 const maxBytes = () => Number(process.env.MAX_UPLOAD_MB ?? 25) * 1024 * 1024;
 
 export const PHOTO_PUBLIC_PATH = '/uploads/photos';

@@ -3,18 +3,18 @@ import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import ExcelJS from 'exceljs';
 import { rmSync } from 'fs';
-import { basename, join } from 'path';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
 import { addDays, clock, isoDate } from '../src/common/utils/date.util';
-import { runSeed } from '../src/database/seeds/seed';
 import { CacheService } from '../src/modules/cache/cache.service';
+import { loadDemoData } from './fixtures/demo-data';
+import { prepareTestDatabase } from './test-db';
 
 /**
- * System integration suite: the real AppModule (guards, pipes, filters, TypeORM, Redis) against the database in
- * .env, reseeded before the run. Tests run in order and share state (a journal saved by the teacher is then read by
- * the parent and counted by the principal), like the demo itself.
+ * System integration suite: the real AppModule (guards, pipes, filters, TypeORM, Redis) against the test database
+ * (see env.ts), loaded with the fixture in fixtures/demo-data.ts before the run. Tests run in order and share state
+ * (a journal saved by the teacher is then read by the parent and counted by the principal).
  */
 
 const TZ = process.env.APP_TIMEZONE ?? 'Asia/Ho_Chi_Minh';
@@ -39,7 +39,8 @@ const login = (phone: string, password = '123456', role?: string) =>
   api('post', '/auth/login').send({ phone, password, role });
 
 beforeAll(async () => {
-  await runSeed({ quiet: true });
+  await prepareTestDatabase();
+  await loadDemoData();
   const mod = await Test.createTestingModule({ imports: [AppModule] }).compile();
   app = mod.createNestApplication<NestExpressApplication>({ logger: ['error'] });
   configureApp(app, { swagger: false });
@@ -51,10 +52,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app?.close();
-  // the uploaded test photo is not part of the demo data
-  if (ids.photoUrl) {
-    rmSync(join(process.env.UPLOAD_DIR ?? 'uploads', 'photos', basename(ids.photoUrl)), { force: true });
-  }
+  rmSync(process.env.UPLOAD_DIR!, { recursive: true, force: true });
 });
 
 // shared ids, filled as the suite goes
@@ -112,6 +110,17 @@ describe('2. Authentication & JWT', () => {
     );
     await api('get', '/auth/me', expired).expect(401);
   });
+
+  it('menu badge counts without a usable session → 401, never 500', async () => {
+    const jwt = app.get(JwtService);
+    const ghost = await jwt.signAsync({ sub: '00000000-0000-4000-8000-000000000000', role: 'TEACHER' });
+    for (const path of ['/messages/unread-count', '/notifications/unread-count']) {
+      await request(http).get(`/api${path}`).expect(401); // no Authorization header
+      await api('get', path, 'null').expect(401);
+      await api('get', path, ghost).expect(401); // signed, but the account does not exist
+      expect((await api('get', path, 'teacher').expect(200)).body).toEqual({ unread: expect.any(Number) });
+    }
+  });
 });
 
 describe('3. RBAC & multi-tenant isolation', () => {
@@ -139,6 +148,40 @@ describe('3. RBAC & multi-tenant isolation', () => {
     const res = await api('get', '/users?role=PARENT&search=huong', 'principal').expect(200);
     expect(res.body.map((u: any) => u.fullName)).toContain('Nguyễn Thị Hương');
   });
+  it('search boxes: special characters never cause a 500, LIKE wildcards match literally', async () => {
+    const count = (body: any) => (Array.isArray(body) ? body.length : body.total);
+    const endpoints = ['/users', '/students', '/announcements', '/audit-logs'];
+    const terms = [
+      '%',
+      '_',
+      '[',
+      ']',
+      '[a-z]',
+      "'",
+      '50%',
+      "x'; DROP TABLE users;--",
+      '😀',
+      '\\',
+      'NGUYỄN',
+      'đ',
+    ];
+    for (const path of endpoints) {
+      for (const term of terms) {
+        const res = await api('get', `${path}?search=${encodeURIComponent(term)}`, 'principal');
+        expect({ path, term, status: res.status }).toEqual({ path, term, status: 200 });
+        if (['%', '_', '[', '[a-z]'].includes(term))
+          expect({ path, term, n: count(res.body) }).toEqual({ path, term, n: 0 });
+      }
+      await api('get', `${path}?search=${'a'.repeat(101)}`, 'principal').expect(400);
+    }
+    // accent- and case-insensitive: "NGUYỄN" and "nguyen" find the same students
+    const upper = (
+      await api('get', `/students?search=${encodeURIComponent('NGUYỄN')}`, 'principal').expect(200)
+    ).body;
+    const plain = (await api('get', '/students?search=nguyen', 'principal').expect(200)).body;
+    expect(upper.length).toBeGreaterThan(0);
+    expect(upper.map((s: any) => s.id).sort()).toEqual(plain.map((s: any) => s.id).sort());
+  });
 });
 
 describe('4. Teacher — bulk logging with exceptions', () => {
@@ -148,7 +191,11 @@ describe('4. Teacher — bulk logging with exceptions', () => {
   it('class register for today starts empty', async () => {
     const res = await api('get', `/daily-journals/class/${ids.class1}`, 'teacher').expect(200);
     expect(res.body.summary).toMatchObject({ total: 16, logged: 0 });
+    expect(res.body.classJournal).toBeNull();
     roster = res.body.students;
+    ids.huy = byName('Lê Gia Huy');
+    ids.ngoc = byName('Trần Bảo Ngọc');
+    ids.minh = byName('Hoàng Đức Minh');
   });
 
   it('rejects an invalid payload (temperature 50°C) with 400', () =>
@@ -160,13 +207,22 @@ describe('4. Teacher — bulk logging with exceptions', () => {
       })
       .expect(400));
 
-  it('rejects a future date (400) and a date older than 7 days for teachers (403)', async () => {
+  it('rejects a future date (400); a teacher takes attendance for today only (403), the principal corrects a past day', async () => {
     await api('post', '/daily-journals/bulk', 'teacher')
       .send({ classId: ids.class1, date: addDays(today, 1), defaults: {} })
       .expect(400);
-    await api('post', '/daily-journals/bulk', 'teacher')
-      .send({ classId: ids.class1, date: addDays(today, -10), defaults: {} })
+    for (const back of [1, 10]) {
+      const res = await api('post', '/daily-journals/bulk', 'teacher')
+        .send({ classId: ids.class1, date: addDays(today, -back), defaults: { attendance: 'PRESENT' } })
+        .expect(403);
+      expect(res.body.message).toMatch(/only take attendance for today/);
+    }
+    await api('put', `/daily-journals/student/${ids.an}`, 'teacher')
+      .send({ date: addDays(today, -1), attendance: 'ABSENT' })
       .expect(403);
+    await api('put', `/daily-journals/student/${ids.an}`, 'principal')
+      .send({ date: addDays(today, -1), attendance: 'PRESENT' })
+      .expect(200);
   });
 
   it('saves class defaults for 16 children with 3 exceptions as DRAFT', async () => {
@@ -218,7 +274,7 @@ describe('4. Teacher — bulk logging with exceptions', () => {
     expect(warned).toEqual(expect.arrayContaining(['Nguyễn Minh An', 'Lê Gia Huy'])); // fever + allergy on file
   });
 
-  it('parent cannot see the draft before approval', async () => {
+  it('parent sees no journal for today yet', async () => {
     const res = await api('get', `/daily-journals/timeline?studentId=${ids.an}`, 'parent').expect(200);
     expect(res.body.days.find((d: any) => d.date === today)).toBeUndefined();
   });
@@ -230,111 +286,164 @@ describe('4. Teacher — bulk logging with exceptions', () => {
     expect(res.body).toMatchObject({ teacherNote: 'Con mạnh dạn phát biểu', status: 'DRAFT' });
   });
 
-  it('uploads a photo once and links it to every child present', async () => {
-    const res = await api('post', '/daily-journals/photos', 'teacher')
-      .field('classId', ids.class1)
-      .field('caption', 'Giờ vẽ tranh')
+  it('uploads journal photos and serves them', async () => {
+    const res = await api('post', '/class-journals/photos', 'teacher')
       .attach('photos', Buffer.from('/9j/4AAQSkZJRgABAQ==', 'base64'), {
         filename: 'a.jpg',
         contentType: 'image/jpeg',
       })
       .expect(201);
-    expect(res.body.linkedStudents).toHaveLength(15); // 16 minus the absent child
-    await request(http).get(res.body.files[0]).expect(200);
-    ids.photoUrl = res.body.files[0];
+    expect(res.body.urls).toHaveLength(1);
+    await request(http).get(res.body.urls[0]).expect(200);
+    ids.photoUrl = res.body.urls[0];
   });
 
   it('rejects a non-image upload with 400', () =>
-    api('post', '/daily-journals/photos', 'teacher')
-      .field('classId', ids.class1)
+    api('post', '/class-journals/photos', 'teacher')
       .attach('photos', Buffer.from('hello'), { filename: 'a.txt', contentType: 'text/plain' })
       .expect(400));
 });
 
-describe('5. Teacher — AI Voice-to-JSON', () => {
-  it('AI text: class defaults + 3 named exceptions, nothing written without apply', async () => {
-    const res = await api('post', '/daily-journals/ai/text', 'teacher')
-      .send({
-        classId: ids.class1,
-        transcript:
-          'Hôm nay các con học hát bài Cả nhà thương nhau. Các con ăn hết suất cơm. Cả lớp ngủ trưa khoảng 1 tiếng rưỡi, ngủ ngon. Bé Gia Huy bị ho và sổ mũi, nhiệt độ 37,6 độ. Bé Bảo Ngọc khóc nhiều, chỉ ăn ít. Bé Nhật Nam xin nghỉ học.',
-      })
-      .expect(201);
-    const d = res.body.draft;
-    expect(d.classDefaults).toMatchObject({ mealLevel: 'ALL', sleepMinutes: 90, sleepQuality: 'GOOD' });
-    const byName = (n: string) => d.exceptions.find((e: any) => e.studentName === n);
-    expect(byName('Lê Gia Huy')).toMatchObject({ temperature: 37.6, healthStatus: 'MONITOR' });
-    expect(byName('Trần Bảo Ngọc')).toMatchObject({ mood: 'SAD', mealLevel: 'LITTLE' });
-    expect(byName('Đỗ Nhật Nam')).toMatchObject({ attendance: 'ABSENT' });
-    expect(res.body.applied).toBeNull();
-    expect(res.body.pipeline).toMatchObject({ asr: 'client', extractor: 'rule-based' });
-  });
+describe('5. Teacher — voice journal (record → text → check → draft)', () => {
+  const voiceText =
+    'Hôm nay các con học hát bài Cả nhà thương nhau. Các con ăn hết suất cơm. Bé Gia Huy bị ho và sổ mũi. Bé Bảo Ngọc khóc nhiều. Bé Tùng ngủ ngon.';
 
-  it('regression: "thịt viên sốt cà chua" is a dish, not a fever (class stays NORMAL)', async () => {
-    const res = await api('post', '/daily-journals/ai/text', 'teacher')
-      .send({
-        classId: ids.class1,
-        transcript:
-          'Bữa trưa có cơm, canh bí đỏ và thịt viên sốt cà chua, các con ăn hết suất. Sức khỏe các con bình thường. Bé Gia Huy bị sốt 38 độ.',
-      })
-      .expect(201);
-    expect(res.body.draft.classDefaults).toMatchObject({ healthStatus: 'NORMAL', mealLevel: 'ALL' });
-    expect(res.body.draft.classDefaults.healthNote).not.toMatch(/thịt viên/);
-    const huy = res.body.draft.exceptions.find((e: any) => e.studentName === 'Lê Gia Huy');
-    expect(huy).toMatchObject({ healthStatus: 'SICK', temperature: 38 });
-  });
-
-  it('AI voice (multipart audio → ASR → extractor) with apply=true saves VOICE drafts', async () => {
-    const res = await api('post', '/daily-journals/ai/voice', 'teacher')
+  it('transcribe: the recording becomes text to check and is kept; the browser text is the fallback', async () => {
+    const res = await api('post', '/class-journals/transcribe', 'teacher')
       .field('classId', ids.class1)
-      .field('apply', 'true')
       .attach('audio', Buffer.alloc(4096, 1), { filename: 'rec.webm', contentType: 'audio/webm' })
       .expect(201);
+    expect(res.body).toMatchObject({ transcriptSource: 'whisper', engine: 'mock' });
     expect(res.body.transcript.length).toBeGreaterThan(20);
-    expect(res.body.pipeline.asr).toBe('mock');
-    expect(res.body.applied.total).toBe(16);
-    expect(res.body.applied.entries.every((e: any) => e.status === 'DRAFT' && e.source === 'VOICE')).toBe(
-      true,
-    );
-  });
+    await request(http).get(res.body.audioUrl).expect(200);
+    ids.audioUrl = res.body.audioUrl;
 
-  it('AI voice without a recording → 400; non-audio file → 400', async () => {
-    await api('post', '/daily-journals/ai/voice', 'teacher').field('classId', ids.class1).expect(400);
-    await api('post', '/daily-journals/ai/voice', 'teacher')
+    const browser = await api('post', '/class-journals/transcribe', 'teacher')
+      .field('classId', ids.class1)
+      .field('transcript', 'Các con ăn hết suất.')
+      .expect(201);
+    expect(browser.body).toMatchObject({ transcriptSource: 'browser', transcript: 'Các con ăn hết suất.' });
+    await api('post', '/class-journals/transcribe', 'teacher').field('classId', ids.class1).expect(400);
+    await api('post', '/class-journals/transcribe', 'teacher')
       .field('classId', ids.class1)
       .attach('audio', Buffer.from('x'), { filename: 'a.txt', contentType: 'text/plain' })
       .expect(400);
   });
 
+  it('draft: class sections, a private note per named child, nothing saved', async () => {
+    const res = await api('post', '/class-journals/voice-draft', 'teacher')
+      .send({ classId: ids.class1, transcript: voiceText, audioUrl: ids.audioUrl })
+      .expect(201);
+    const d = res.body;
+    ids.draft = JSON.stringify(d);
+    expect(d.sections.learning).toMatch(/học hát/);
+    expect(d.sections.meal).toMatch(/ăn hết suất/);
+    expect(d.personal[ids.huy]).toMatch(/ho và sổ mũi/);
+    expect(d.personal[ids.ngoc]).toMatch(/khóc nhiều/);
+    // nobody's name is in what every parent reads
+    expect(JSON.stringify(d.sections)).not.toMatch(/Huy|Ngọc|Tùng/);
+    expect(d).toMatchObject({ engine: 'keywords', audioUrl: ids.audioUrl });
+    const list = await api('get', `/class-journals?classId=${ids.class1}&date=${today}`, 'teacher').expect(
+      200,
+    );
+    expect(list.body.items).toHaveLength(0);
+  });
+
+  it('draft lists what the teacher must confirm: an unknown name (held), health, attendance', () => {
+    const d = JSON.parse(ids.draft);
+    const types = d.issues.map((i: any) => i.type);
+    expect(types).toEqual(expect.arrayContaining(['unknown_student', 'health_alert', 'attendance_mismatch']));
+    const unknown = d.issues.find((i: any) => i.type === 'unknown_student');
+    expect(unknown).toMatchObject({ held: true, status: 'open', text: 'Bé Tùng ngủ ngon.' });
+    expect(unknown.spokenNames.join(' ')).toMatch(/tùng/i);
+    // Bảo Ngọc is marked absent today, yet "khóc nhiều" says what she did in class
+    expect(d.issues.find((i: any) => i.type === 'attendance_mismatch').studentIds).toEqual([ids.ngoc]);
+    expect(d.sections.sleep).toBe(''); // the held statement is in no section
+  });
+
+  it('regression: "thịt viên sốt cà chua" is a dish, not a fever', async () => {
+    const res = await api('post', '/class-journals/voice-draft', 'teacher')
+      .send({
+        classId: ids.class1,
+        transcript: 'Bữa trưa có cơm, canh bí đỏ và thịt viên sốt cà chua, các con ăn hết suất.',
+      })
+      .expect(201);
+    expect(res.body.sections.meal).toMatch(/thịt viên sốt cà chua/);
+    expect(res.body.sections.health).toBe('');
+    expect(res.body.issues.filter((i: any) => i.type === 'health_alert')).toHaveLength(0);
+  });
+
   it('parents cannot call the AI pipeline (403)', () =>
-    api('post', '/daily-journals/ai/text', 'parent')
+    api('post', '/class-journals/voice-draft', 'parent')
       .send({ classId: ids.class1, transcript: 'abc test' })
       .expect(403));
 });
 
-describe('6. Teacher — approve & publish', () => {
-  it('approves every draft of the class for today', async () => {
-    const res = await api('post', '/daily-journals/approve', 'teacher')
-      .send({ classId: ids.class1 })
-      .expect(201);
-    expect(res.body.approved).toBe(16);
+describe('6. Teacher reviews, approves and publishes the journal', () => {
+  it('the voice draft is saved for review with its recording; one journal per class and day', async () => {
+    const d = JSON.parse(ids.draft);
+    const body = {
+      classId: ids.class1,
+      source: 'voice',
+      sections: d.sections,
+      personal: d.personal,
+      transcript: d.transcript,
+      issues: d.issues,
+      audio: [ids.audioUrl],
+    };
+    const res = await api('post', '/class-journals', 'teacher').send(body).expect(201);
+    expect(res.body).toMatchObject({ status: 'review', source: 'voice', audio: [ids.audioUrl] });
+    ids.journal = res.body.id;
+    await api('post', '/class-journals', 'teacher').send(body).expect(409);
   });
 
-  it('history lists today as fully approved', async () => {
-    const res = await api('get', `/daily-journals/class/${ids.class1}/history`, 'teacher').expect(200);
-    expect(res.body[0]).toMatchObject({ date: today, logged: 16, approved: 16, draft: 0, voice: true });
+  it('approving is refused while points are open', () =>
+    api('post', `/class-journals/${ids.journal}/approve`, 'teacher').expect(409));
+
+  it('the teacher decides: the held statement goes to a child, the rest is confirmed; photos are added', async () => {
+    const j = (await api('get', `/class-journals/${ids.journal}`, 'teacher').expect(200)).body;
+    const held = j.issues.find((i: any) => i.held);
+    const res = await api('put', `/class-journals/${ids.journal}`, 'teacher')
+      .send({
+        sections: j.sections,
+        personal: { ...j.personal, [ids.minh]: held.text },
+        photos: [ids.photoUrl],
+        issues: j.issues.map((i: any) =>
+          i.held
+            ? { id: i.id, resolution: 'assigned', assignedTo: [ids.minh] }
+            : { id: i.id, resolution: 'confirmed' },
+        ),
+      })
+      .expect(200);
+    expect(res.body.issues.every((i: any) => i.status === 'resolved')).toBe(true);
+    expect(res.body.personal[ids.minh]).toBe('Bé Tùng ngủ ngon.');
+    expect(res.body.photos).toEqual([ids.photoUrl]);
+  });
+
+  it('approve, then publish: parents of the class are told, and each family about its own child’s note', async () => {
+    expect(
+      (await api('post', `/class-journals/${ids.journal}/approve`, 'teacher').expect(201)).body.status,
+    ).toBe('approved');
+    const published = await api('post', `/class-journals/${ids.journal}/publish`, 'teacher').expect(201);
+    expect(published.body).toMatchObject({ status: 'published', revision: 1 });
+    const titles = (await api('get', '/notifications?type=JOURNAL', 'parent').expect(200)).body.items.map(
+      (n: any) => n.title,
+    );
+    expect(titles).toContain('New journal published');
+    // this parent's child (An) has no personal note today
+    expect(titles.some((t: string) => t.startsWith('A note about'))).toBe(false);
   });
 });
 
 describe('7. Parent — timeline & camera', () => {
-  it('timeline shows today (approved) with ordered events and the photo', async () => {
+  it('timeline shows today: the class sections in order, the photo, and no other child’s note', async () => {
     const res = await api('get', `/daily-journals/timeline?studentId=${ids.an}`, 'parent').expect(200);
     const day = res.body.days[0];
     expect(day.date).toBe(today);
-    expect(day.events.map((e: any) => e.key)).toEqual(
-      expect.arrayContaining(['learning', 'meal', 'sleep', 'health', 'emotion']),
-    );
-    expect(day.photos.length).toBeGreaterThanOrEqual(1);
+    expect(day.events.map((e: any) => e.key)).toEqual(expect.arrayContaining(['learning', 'meal']));
+    expect(day.photos.map((p: any) => p.url)).toEqual([ids.photoUrl]);
+    expect(day.personalNote).toBe('');
+    expect(JSON.stringify(day)).not.toMatch(/sổ mũi|khóc nhiều|Tùng/);
   });
 
   it('parent cannot read another child’s timeline (403)', async () => {
@@ -382,6 +491,20 @@ describe('7. Parent — timeline & camera', () => {
       expect(cam).toMatchObject({ state: 'SCHEDULED', streamUrl: null });
       expect(cam.window.date).toBe(addDays(today, 1));
       await api('get', `/camera-streams/${camIds[1]}/watch`, 'parent').expect(403);
+    });
+
+    it('camera access turned off for a parent → 403 everywhere; turned back on → allowed again', async () => {
+      const me = (await api('get', '/auth/me', 'parent').expect(200)).body;
+      expect(me.cameraAccess).toBe(true); // on by default
+      const off = await api('patch', `/users/${me.id}`, 'principal')
+        .send({ cameraAccess: false })
+        .expect(200);
+      expect(off.body.cameraAccess).toBe(false);
+      await api('get', `/camera-streams/watch?studentId=${ids.an}`, 'parent').expect(403);
+      await api('get', `/camera-streams/${camIds[0]}/watch`, 'parent').expect(403);
+      expect((await api('get', '/auth/me', 'parent').expect(200)).body.cameraAccess).toBe(false);
+      await api('patch', `/users/${me.id}`, 'principal').send({ cameraAccess: true }).expect(200);
+      await api('get', `/camera-streams/watch?studentId=${ids.an}`, 'parent').expect(200);
     });
 
     it('a parent of another class cannot watch this class (403)', async () => {
@@ -448,11 +571,49 @@ describe('8. Principal — dashboard & reports', () => {
     expect(dist).toBe(meals);
   });
 
-  it.each(['attendance', 'journals', 'nutrition', 'health'])('report table "%s" has rows', async (type) => {
-    const res = await api('get', `/reports/table?type=${type}&from=${dash.range.from}`, 'principal').expect(
-      200,
+  it.each(['attendance', 'journals', 'activity', 'students', 'parents', 'nutrition', 'health'])(
+    'report table "%s" has rows',
+    async (type) => {
+      const res = await api('get', `/reports/table?type=${type}&from=${dash.range.from}`, 'principal').expect(
+        200,
+      );
+      expect(res.body.rows.length).toBeGreaterThan(0);
+    },
+  );
+
+  it('class, student and parent reports match the records; codes are labelled in the exported file', async () => {
+    const students = (await api('get', '/students', 'principal').expect(200)).body;
+    const st = (await api('get', '/reports/table?type=students', 'principal').expect(200)).body;
+    expect(st.rows).toHaveLength(students.length);
+    expect(st.rows[0]).toEqual(
+      expect.objectContaining({ gender: expect.stringMatching(/^(MALE|FEMALE)$/), status: 'ACTIVE' }),
     );
-    expect(res.body.rows.length).toBeGreaterThan(0);
+    const pa = (
+      await api('get', `/reports/table?type=parents&classId=${ids.class1}`, 'principal').expect(200)
+    ).body;
+    expect(pa.rows.every((r: any) => r.className === 'Mặt Trời 1')).toBe(true);
+    const act = (
+      await api('get', `/reports/table?type=activity&from=${dash.range.from}`, 'principal').expect(200)
+    ).body;
+    const c1 = act.rows.find((r: any) => r.className === 'Mặt Trời 1');
+    expect(c1).toMatchObject({ teacher: 'Nguyễn Thị Mai', students: 16 });
+    expect(c1.journalsPublished).toBeGreaterThan(0);
+    const jr = (
+      await api('get', `/reports/table?type=journals&from=${dash.range.from}`, 'principal').expect(200)
+    ).body;
+    expect(jr.rows.find((r: any) => r.date === today && r.className === 'Mặt Trời 1')).toMatchObject({
+      status: 'PUBLISHED',
+      createdWith: 'VOICE',
+    });
+    const res = await api('get', '/reports/export?type=students&format=xlsx', 'principal')
+      .buffer(true)
+      .parse(binary)
+      .expect(200);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(res.body);
+    const values = wb.worksheets[0].getColumn(3).values as unknown[];
+    expect(values).toEqual(expect.arrayContaining(['Nam', 'Nữ']));
+    expect(values).not.toContain('MALE');
   });
 
   it('exports a real PDF (Vietnamese font embedded)', async () => {
@@ -558,6 +719,10 @@ describe('9. Principal & Admin — management', () => {
       classCount: 2,
       teacherCount: 4,
     });
+    // studentCount = active students of the school's classes, same as the principal's own list
+    const active = (await api('get', '/students?status=ACTIVE', 'principal').expect(200)).body;
+    expect(schools.find((s: any) => s.name === 'Mầm non Kinder Stars').studentCount).toBe(active.length);
+    expect(schools.find((s: any) => s.name === 'Mầm non Hoa Sen').studentCount).toBe(0);
     const ad = (await api('get', '/reports/admin-dashboard', 'admin').expect(200)).body;
     expect(ad.totals.schools).toBe(2);
     await api('get', `/reports/dashboard?schoolId=${schools[0].id}`, 'admin').expect(200);

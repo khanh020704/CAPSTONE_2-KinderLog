@@ -1,10 +1,14 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { promises as fs } from 'fs';
+import { join } from 'path';
 import { Repository } from 'typeorm';
 import { AuthUser } from '../../common/decorators';
-import { UserRole } from '../../common/enums';
+import { RecordStatus, UserRole } from '../../common/enums';
 import { foldSearch, likeFolded } from '../../common/utils/sql.util';
 import { AccessService } from '../access/access.service';
+import { ClassJournalNote } from '../daily-journals/entities/class-journal-note.entity';
+import { uploadRoot } from '../daily-journals/upload.config';
 import { User } from '../users/entities/user.entity';
 import { CreateStudentDto, LinkParentDto, ListStudentsQueryDto, UpdateStudentDto } from './dto/student.dto';
 import { ParentStudentMap } from './entities/parent-student-map.entity';
@@ -34,11 +38,16 @@ export class StudentsService {
       .addSelect(['p.id', 'p.fullName', 'p.phone', 'p.email', 'p.status'])
       .orderBy('s.fullName', 'ASC');
     if (schoolId) qb.andWhere('c.schoolId = :schoolId', { schoolId });
-    if (visible) qb.andWhere('c.id IN (:...visible)', { visible });
+    if (visible) qb.andWhere(visible.length ? 'c.id IN (:...visible)' : '1=0', { visible });
     if (q.classId) qb.andWhere('s.classId = :classId', { classId: q.classId });
     if (q.status) qb.andWhere('s.status = :status', { status: q.status });
     if (q.search) qb.andWhere(likeFolded('s.fullName', 'q'), { q: foldSearch(q.search) });
-    if (user.role === UserRole.PARENT) qb.andWhere('l.parentId = :pid', { pid: user.id });
+    if (user.role === UserRole.PARENT) {
+      qb.andWhere('l.parentId = :pid AND l.status = :linkActive', {
+        pid: user.id,
+        linkActive: RecordStatus.ACTIVE,
+      });
+    }
     return qb.getMany();
   }
 
@@ -66,7 +75,11 @@ export class StudentsService {
 
   async remove(user: AuthUser, id: string) {
     await this.access.assertStudent(user, id);
-    await this.students.delete(id);
+    // The child's notes in class journals do not cascade (SQL Server allows one cascade path per table).
+    await this.students.manager.transaction(async (tx) => {
+      await tx.delete(ClassJournalNote, { studentId: id });
+      await tx.delete(Student, id);
+    });
     return { success: true };
   }
 
@@ -86,9 +99,37 @@ export class StudentsService {
         studentId,
         relationship: dto.relationship,
         isPrimary: dto.isPrimary ?? false,
+        // omitted: a new link is ACTIVE (column default), an existing one keeps its status
+        ...(dto.status && { status: dto.status }),
       },
       ['parentId', 'studentId'],
     );
+    return this.findOne(user, studentId);
+  }
+
+  /** Stores the uploaded photo as the child's avatar and removes the previous uploaded file. */
+  async setAvatar(
+    user: AuthUser,
+    studentId: string,
+    file: Express.Multer.File | undefined,
+    publicPath: string,
+  ) {
+    if (!file) throw new BadRequestException('Attach an image in the "avatar" field');
+    const removeFile = (url: string | null) =>
+      url?.startsWith('/uploads/')
+        ? fs.unlink(join(uploadRoot(), url.replace(/^\/uploads\//, ''))).catch(() => undefined)
+        : Promise.resolve();
+    const url = `${publicPath}/${file.filename}`;
+    let student: Student;
+    try {
+      student = await this.access.assertStudent(user, studentId);
+    } catch (err) {
+      await removeFile(url); // nothing is kept for a request that was refused
+      throw err;
+    }
+    const previous = student.avatarUrl;
+    await this.students.update(studentId, { avatarUrl: url });
+    if (previous !== url) await removeFile(previous);
     return this.findOne(user, studentId);
   }
 

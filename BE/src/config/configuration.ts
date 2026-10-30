@@ -26,12 +26,17 @@ export const envValidationSchema = Joi.object({
   UPLOAD_DIR: Joi.string().default('uploads'),
   MAX_UPLOAD_MB: Joi.number().default(25),
 
-  AI_MODE: Joi.string().valid('mock', 'live').default('mock'),
+  AI_MODE: Joi.string().valid('mock', 'live').default('live'),
   OPENAI_API_KEY: Joi.string().allow('').default(''),
   WHISPER_MODEL: Joi.string().default('whisper-1'),
   WHISPER_LANGUAGE: Joi.string().default('vi'),
   ANTHROPIC_API_KEY: Joi.string().allow('').default(''),
   ANTHROPIC_MODEL: Joi.string().default('claude-opus-5-5'),
+  GROQ_API_KEY: Joi.string().allow('').default(''),
+  GROQ_STT_MODEL: Joi.string().default('whisper-large-v3'),
+  GROQ_LLM_MODEL: Joi.string().default('openai/gpt-oss-120b'),
+  GROQ_FALLBACK_MODELS: Joi.string().allow('').default('openai/gpt-oss-20b'),
+  JOURNAL_AI_PROVIDER: Joi.string().valid('', 'groq', 'claude', 'keywords').default(''),
 });
 
 export default () => ({
@@ -53,11 +58,20 @@ export default () => ({
   uploadDir: process.env.UPLOAD_DIR ?? 'uploads',
   maxUploadMb: Number(process.env.MAX_UPLOAD_MB ?? 25),
   ai: {
-    mode: (process.env.AI_MODE ?? 'mock') as 'mock' | 'live',
+    mode: (process.env.AI_MODE ?? 'live') as 'mock' | 'live',
     openaiApiKey: process.env.OPENAI_API_KEY ?? '',
     whisperModel: process.env.WHISPER_MODEL ?? 'whisper-1',
     whisperLanguage: process.env.WHISPER_LANGUAGE ?? 'vi',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
     anthropicModel: process.env.ANTHROPIC_MODEL ?? 'claude-opus-5-5',
+    groqApiKey: process.env.GROQ_API_KEY ?? '',
+    groqSttModel: process.env.GROQ_STT_MODEL ?? 'whisper-large-v3',
+    groqLlmModel: process.env.GROQ_LLM_MODEL ?? 'openai/gpt-oss-120b',
+    groqFallbackModels: (process.env.GROQ_FALLBACK_MODELS ?? 'openai/gpt-oss-20b')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    /** '' = the first provider with a key (Groq, then Claude), otherwise the keyword rules. */
+    provider: process.env.JOURNAL_AI_PROVIDER ?? '',
   },
 });

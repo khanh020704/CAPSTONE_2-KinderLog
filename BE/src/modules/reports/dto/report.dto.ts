@@ -3,8 +3,15 @@ import { DateRangeQueryDto } from '../../../common/dto/date-range.dto';
 
 export enum ReportType {
   ATTENDANCE = 'attendance',
-  NUTRITION = 'nutrition',
+  /** Journal completion: one row per class and day */
   JOURNALS = 'journals',
+  /** Per class over the range: attendance days, published journals, photos, teacher ↔ parent messages */
+  ACTIVITY = 'activity',
+  /** Current students (no date range) */
+  STUDENTS = 'students',
+  /** Parent ↔ child links (no date range) */
+  PARENTS = 'parents',
+  NUTRITION = 'nutrition',
   HEALTH = 'health',
 }
 
@@ -28,6 +35,8 @@ export interface ReportColumn {
   width?: number;
   /** percent values are stored as 0–100 numbers */
   format?: 'text' | 'number' | 'percent' | 'date';
+  /** Codes stored in the rows (e.g. PUBLISHED, MALE) → the text written in the exported file. */
+  labels?: Record<string, string>;
 }
 
 export interface ReportTable {

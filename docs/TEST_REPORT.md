@@ -8,7 +8,7 @@ Phạm vi: Backend NestJS (`BE/`), Frontend React + Vite (`FE/`), tích hợp FE
 
 | Hạng mục | Kết quả | Ghi chú |
 |---|---|---|
-| BE E2E (`npm run test:e2e`) | **PASS — 59/59** | chạy trên SQL Server 2022, DB được seed lại trước mỗi lần |
+| BE E2E (`npm run test:e2e`) | **PASS — 119/119** | 59 nghiệp vụ + 13 khởi tạo từ DB trống + 20 phân hệ phụ trợ + 16 luồng Admin + 11 luồng Hiệu trưởng; chạy trên database riêng `kinderlog_test` |
 | BE TypeScript (`tsc --noEmit`) | **PASS** | 0 lỗi |
 | BE ESLint (`npm run lint`, src + test) | **PASS** | 0 lỗi, 0 cảnh báo |
 | BE Prettier (`npm run format:check`) | **PASS** | |
@@ -95,14 +95,105 @@ Thực hiện trong trình duyệt tích hợp, origin riêng `qa.localhost:5173
 | Dọn mã | FE: bỏ mock `cameras/schedules/attendance/journals` và các hàm/selector không còn dùng (`JournalTimeline`, `cameraState`, `downloadCSV`, …) — đã có API thật; giữ mock cho chat, thông báo, năm học, nhật ký hệ thống. Giao diện không đổi |
 | Kết quả | E2E 59/59, tsc/lint/build BE và lint/build FE đều đạt |
 
-## 7. Cách chạy lại
+## 7. Chuẩn bị vận hành thật — gỡ dữ liệu demo (20/10/2026)
+
+| Hạng mục | Thay đổi |
+|---|---|
+| Database | Bỏ `npm run seed`. `npm run db:seed:admin` tạo System Admin đầu tiên từ `.env` (`ADMIN_PHONE`, `ADMIN_PASSWORD` ≥ 10 ký tự có chữ và số); `npm run db:clean -- --yes` xoá toàn bộ dữ liệu + ảnh rồi tạo lại Admin. Database `kinderlog` đã được làm sạch: 1 tài khoản Admin, mọi bảng khác 0 dòng, `uploads/photos` trống |
+| Test | Dữ liệu mẫu chỉ còn là fixture của test (`BE/test/fixtures/demo-data.ts`). E2E chạy trên `<DB_NAME>_test`, upload vào thư mục tạm, Redis DB 1 — không đụng dữ liệu thật. Bộ mới `zero-state.e2e-spec.ts` (13 test): Admin trên hệ thống trống → tạo trường, hiệu trưởng, giáo viên, lớp, học sinh, phụ huynh; mọi dashboard/báo cáo/xuất file không có NaN/Infinity |
+| AI | `AI_MODE=live` mặc định. Thiếu `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` → `503` "AI journal drafts are not set up yet…" thay cho bản nháp giả; `/health` và trang Giám sát báo "Not configured". `mock` chỉ dùng trong test |
+| FE | Mock (`store/seed.js`) thay bằng `store/localData.js` rỗng; bỏ "Fill in" tài khoản demo ở trang đăng nhập, "Reset demo data" trong Cài đặt, ảnh minh hoạ `demo:`; trang Quên mật khẩu không còn lộ mật khẩu ban đầu. Trang Giám sát dùng số đo thật (`GET /api/system/metrics`: CPU, RAM, ổ đĩa, số/dung lượng ảnh, dung lượng DB) thay cho số liệu mẫu |
+
+Lỗi phát hiện khi kiểm thử trạng thái trống và đã sửa:
+
+| Mã | Mức độ | Mô tả | Cách sửa |
+|---|---|---|---|
+| B9 | **Cao** | Giáo viên chưa có lớp / phụ huynh chưa có con gọi `GET /classes`, `GET /students` → SQL `IN ()` lỗi cú pháp (500) | Danh sách rỗng → điều kiện `1=0` (`classes.service.ts`, `students.service.ts`) |
+| B10 | **Cao** | Trang Nhật ký của giáo viên trắng xoá (`reading 'logged'`) khi giáo viên được phân lớp sau lần đăng nhập | Truy vấn trả `undefined` (đang tải) thay vì `null` khi chưa có lớp/con (9 chỗ trong `teacher.jsx`, `parent.jsx`) |
+| B11 | Trung bình | Dashboard (cache Redis 60 s) không cập nhật sau khi tạo trường/lớp/học sinh/tài khoản; `dash:admin` không bao giờ bị xoá | `DashboardCacheInterceptor`: mọi request ghi thành công xoá cache dashboard |
+| B12 | Thấp | Thiếu thông báo trống: biểu đồ/tổng quan trường (Admin), bảng lớp và camera (Hiệu trưởng), danh sách năm học, hoạt động gần đây; Năm học đếm lớp từ mock | Thêm EmptyState / dòng chú thích; đếm lớp theo API |
+
+Kiểm tra trên trình duyệt (DB xác minh riêng, đã xoá sau khi kiểm tra): 6 màn hình Admin, 13 màn hình Hiệu trưởng,
+6 màn hình Giáo viên (chưa có lớp và đã có lớp), 6 màn hình Phụ huynh (chưa liên kết con) — không lỗi console.
+
+## 8. Phân hệ phụ trợ ở Backend (20/10/2026)
+
+Năm bảng mới (migration `1792491558421-AuxiliaryModules`, chỉ tạo bảng, không đổi bảng cũ): `academic_years`,
+`school_announcements`, `notifications`, `messages`, `audit_logs` — kèm module NestJS, phân quyền JWT + Roles và
+phân trang `{ items, total, page, limit, pages }`. Chi tiết API: `BE/README.md` mục 3.
+
+| Bộ test `collaboration.e2e-spec.ts` (20 test) | Nội dung kiểm tra |
+|---|---|
+| Năm học (5) | tạo/sửa/xoá, trùng tên 409, tên/ngày sai 400, chỉ một năm ACTIVE, giáo viên chỉ đọc, trường khác 404, năm còn lớp không xoá/đổi tên được, trường mới có sẵn năm học hiện tại |
+| Thông báo trường (3) | nháp ẩn với phụ huynh, đăng → hiện + tạo thông báo đúng đối tượng, hết hạn bị ẩn, phân trang + lọc + tìm không dấu, giáo viên 403, trường khác 404 |
+| Tin nhắn (5) | danh bạ theo quan hệ thật, 6 trường hợp bị từ chối (403), số chưa đọc, gộp thông báo, hội thoại phân trang mới nhất trước, đánh dấu đã đọc, chỉ người gửi sửa (khi chưa đọc) / xoá |
+| Thông báo (2) | Hiệu trưởng gửi theo vai trò (chỉ tài khoản ACTIVE của trường), không gửi sang trường khác; chỉ đọc/đánh dấu/xoá được của mình |
+| Nhật ký hệ thống (5) | đăng nhập sai được ghi (không lộ mật khẩu), người thao tác + IP + kết quả, không ghi nội dung tin nhắn, lọc + phân trang, cách ly trường, GV/PH 403, xoá tài khoản giữ log + xoá tin nhắn, Admin dọn log cũ |
+
+Kết quả: **92/92** (59 cũ + 13 khởi tạo + 20 mới); lint, Prettier, `tsc`, build đạt. Migration đã chạy trên `kinderlog`.
+
+### FE dùng API mới (20/10/2026)
+
+Các trang Tin nhắn, Thông báo, Thông báo trường (Hiệu trưởng + Phụ huynh), Năm học, Nhật ký hệ thống, "Hoạt động gần
+đây" trên Dashboard và các badge chưa đọc đọc/ghi qua API; `localStorage` chỉ còn giữ Cài đặt hệ thống. FE: lint 0 lỗi,
+Prettier, build đạt.
+
+Kiểm thử trên trình duyệt (database xác minh riêng, đã xoá sau khi kiểm tra), hai tab với hai phiên độc lập:
+
+| Kịch bản | Kết quả |
+|---|---|
+| Giáo viên gửi tin cho phụ huynh | Lưu vào `messages` (SQL Server) + thông báo MESSAGE cho phụ huynh |
+| Phụ huynh đăng nhập ở tab khác | Badge Messages 1 / Notifications 1; thấy đúng tin, dòng phụ "Teacher · Mặt Trời 1" |
+| Phụ huynh trả lời | Tab giáo viên tự hiện câu trả lời sau ≤ 5 s, không tải lại trang; badge phụ huynh về 0 |
+| Hiệu trưởng tạo năm học "2026–2027" (Current) | Lưu `2026-2027` ACTIVE; đếm đúng 2 lớp |
+| Hiệu trưởng đăng thông báo cho phụ huynh | Phụ huynh thấy ở trang chủ + trang Thông báo trường + 1 thông báo; bấm vào → đánh dấu đã đọc (`read_at`), badge giảm |
+| Nhật ký (Hiệu trưởng, Admin) | Đủ đăng nhập / tạo năm học / tạo thông báo với người thao tác; lọc theo vai trò chạy phía server; không ghi tin nhắn |
+
+Sửa thêm ở BE: mở hội thoại cũng đánh dấu đã đọc thông báo "tin nhắn mới" của người đó (test bổ sung; vẫn 92/92).
+
+## 9. Rà soát luồng Quản trị viên (21/10/2026)
+
+Bộ `admin.e2e-spec.ts` (16 test): Dashboard khớp dữ liệu và làm mới ngay sau thao tác ghi; trường học tạo / sửa / xem /
+xoá (trường mới có năm học ACTIVE, trường rỗng xoá kèm năm học); tài khoản Hiệu trưởng tạo / trùng số / reset mật khẩu /
+khoá – mở khoá / xoá (thông báo và nhật ký được giữ); `/health`, `/system/metrics`; nhật ký lọc theo ngày, hành động,
+trạng thái, phân trang, kết quả rỗng, tham số sai (400) và dọn log cũ.
+
+| Mã | Mức độ | Vấn đề | Cách sửa |
+|---|---|---|---|
+| B13 | **Cao** | Khoá / tạm ngưng **trường** không cắt phiên đang mở: nhân viên vẫn dùng token tới khi hết hạn (8 giờ), trái với thông báo "Access will be blocked immediately" | `JwtStrategy` kiểm tra cả trạng thái trường mỗi request → 401, FE tự đăng xuất |
+| B14 | Trung bình | Sửa tên trường không kiểm tra trùng (lúc tạo thì có) | 409 "A school with this name already exists" |
+| B15 | Thấp | Xoá trường còn tài khoản / lớp trả thông báo chung từ khoá ngoại SQL Server | Kiểm tra trước, 409 nêu số tài khoản và số lớp còn lại |
+
+Không tìm thấy `IN ()` rỗng hay chia cho 0 trong các truy vấn Admin. Giao diện không đổi. FE không có nút xoá trường /
+Hiệu trưởng (chỉ Kích hoạt / Tạm ngưng / Khoá / Reset mật khẩu) nên xoá được kiểm tra ở mức API; dọn log cũ cũng chỉ có qua
+API (`DELETE /api/audit-logs?before=`).
+
+## 10. Rà soát phân hệ Hiệu trưởng (22/10/2026)
+
+Bộ `principal.e2e-spec.ts` (11 test): số liệu Dashboard khớp dữ liệu; "Unread Messages" chỉ tính hộp thư của Hiệu
+trưởng (không đọc được tin GV ↔ PH); năm học "2026-2027"; lớp học tạo / sửa / trùng tên / GVCN khác trường / xoá;
+tài khoản giáo viên tạo / reset mật khẩu / khoá; học sinh nhận mọi ngày sinh hợp lệ, chuyển lớp trong trường, xoá kèm
+nhật ký; thông báo trường do server ghi ngày đăng; danh bạ tin nhắn; mở hội thoại xoá thông báo tin nhắn; cách ly
+dữ liệu giữa hai trường (403 cho lớp / học sinh / tài khoản / báo cáo của trường khác).
+
+| Mã | Mức độ | Vấn đề | Cách sửa |
+|---|---|---|---|
+| B16 | Trung bình | Thêm học sinh + phụ huynh mới (hoặc phụ huynh + học sinh mới): nếu bước thứ hai lỗi, tài khoản phụ huynh vừa tạo vẫn còn → lưu lại báo "số điện thoại đã dùng" | FE xoá tài khoản phụ huynh vừa tạo khi bước sau lỗi (chỉ logic, giao diện không đổi) |
+| B17 | Thấp | Xoá lớp không còn học sinh nhưng còn nhật ký cũ → lỗi khoá ngoại chung chung | 409 nêu số học sinh / số nhật ký, gợi ý tạm ngưng lớp |
+| B18 | Thấp | Trùng tên lớp trong cùng năm học → "A record with the same unique value already exists" | 409 "A class named … already exists in 2026-2027" |
+
+Trình duyệt (DB test): 14 trang Hiệu trưởng tải không lỗi console; ô Age Group là ô nhập chữ; form thông báo không có
+ô Publish Date. Ghi nhận: FE chưa có trang Tin nhắn / Thông báo cho Hiệu trưởng (API đã hỗ trợ) — thêm trang là thay
+đổi giao diện nên chưa làm.
+
+## 11. Cách chạy lại
 
 ```bash
 docker compose -f BE/docker-compose.yml up -d
 cd BE && npm run migration:run  # tạo database + bảng (lần đầu)
-cd BE && npm run test:e2e        # reseed DB + 59 test (dùng DB trong .env)
+cd BE && npm run test:e2e        # 119 test trên database kinderlog_test (tự tạo + migrate)
 cd BE && npm run lint && npm run format:check && npm run build
 cd FE && npm run lint && npm run format:check && npm run build
 ```
 
-> Lưu ý: `test:e2e` seed lại database trong `.env` — chạy `npm run seed` sau đó nếu cần dữ liệu demo nguyên bản.
+> `test:e2e` không đụng database `kinderlog` đang dùng.

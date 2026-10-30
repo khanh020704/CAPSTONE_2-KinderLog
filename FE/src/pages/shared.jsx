@@ -1,27 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { AlertCircle, BellOff, CheckCheck, Eye, EyeOff, KeyRound, LogOut, Pencil, ScrollText, ShieldCheck } from 'lucide-react'
-import { notificationsFor, useStore } from '../store/store'
+import { useStore } from '../store/store'
 import { api } from '../lib/api'
+import { useApi } from '../lib/useApi'
 import { RELATIONSHIP, errorText, label } from '../lib/labels'
-import { fmtDateTime, norm, toISO } from '../lib/utils'
+import { AUDIT_ACTION_OPTIONS, AUDIT_ROLE_OPTIONS, auditActionParam, auditRoleParam, toAuditRow, toNotification } from '../lib/mappers'
+import { fmtDateTime } from '../lib/utils'
 import { FormFields, validateFields } from '../components/CrudPage'
 import { useLogout } from '../components/Shell'
-import {
-  Avatar,
-  EmptyState,
-  Field,
-  Modal,
-  NotificationItem,
-  PageHeader,
-  Pagination,
-  SearchInput,
-  Select,
-  SkeletonTable,
-  StatusBadge,
-  useFakeLoad,
-  useToast,
-} from '../components/ui'
+import { Avatar, EmptyState, Field, Modal, NotificationItem, PageHeader, Pagination, SearchInput, Select, SkeletonTable, StatusBadge, useToast } from '../components/ui'
 
 const PROFILE_FIELDS = [
   { name: 'name', label: 'Full Name', required: true },
@@ -217,27 +205,31 @@ export function ChangePasswordPage() {
   )
 }
 
-// System Admin sees every entry; a principal only sees activity inside the school.
+// Filtering and paging happen on the server (GET /audit-logs). The backend scopes the entries: the System Admin sees
+// every school, a principal only the activity of their own school.
 export function AuditLogPage({ scope }) {
-  const { db } = useStore()
-  const loading = useFakeLoad()
   const [q, setQ] = useState('')
+  const [search, setSearch] = useState('')
   const [date, setDate] = useState('')
   const [role, setRole] = useState('')
   const [action, setAction] = useState('')
   const [page, setPage] = useState(1)
-  const source = useMemo(() => (scope === 'school' ? db.audit.filter((a) => a.role !== 'System Admin') : db.audit), [db.audit, scope])
-  const roles = [...new Set(source.map((a) => a.role))]
-  const actions = [...new Set(source.map((a) => a.action))]
-  const rows = source.filter(
-    (a) =>
-      (!q || norm(`${a.user} ${a.description} ${a.module}`).includes(norm(q))) &&
-      (!date || toISO(new Date(a.at)) === date) &&
-      (!role || a.role === role) &&
-      (!action || a.action === action),
-  )
   const size = 10
-  const pages = Math.max(1, Math.ceil(rows.length / size))
+  // typing in the search box waits for a short pause before asking the server
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(q.trim()), 350)
+    return () => clearTimeout(t)
+  }, [q])
+  const logs = useApi(
+    () => api.auditLogs.list({ search, from: date, to: date, role: auditRoleParam(role), action: auditActionParam(action), page, limit: size }),
+    [search, date, role, action, page],
+  )
+  const loading = logs.initial
+  const rows = (logs.data?.items || []).map(toAuditRow)
+  const filtered = !!(search || date || role || action)
+  const roles = scope === 'school' ? AUDIT_ROLE_OPTIONS.filter((r) => r !== 'System Admin') : AUDIT_ROLE_OPTIONS
+  const actions = AUDIT_ACTION_OPTIONS
+  const pages = Math.max(1, logs.data?.pages || 1)
   const cur = Math.min(page, pages)
   const reset = (fn) => (v) => {
     fn(v)
@@ -257,7 +249,11 @@ export function AuditLogPage({ scope }) {
         <SkeletonTable />
       ) : rows.length === 0 ? (
         <div className="card">
-          <EmptyState icon={ScrollText} title="No activity found." text="Try a different search or filter." />
+          <EmptyState
+            icon={ScrollText}
+            title={filtered ? 'No activity found.' : 'No activity yet.'}
+            text={filtered ? 'Try a different search or filter.' : 'Actions taken in KinderLog will appear here.'}
+          />
         </div>
       ) : (
         <div className="card table-card">
@@ -274,7 +270,7 @@ export function AuditLogPage({ scope }) {
               </tr>
             </thead>
             <tbody>
-              {rows.slice((cur - 1) * size, cur * size).map((a) => (
+              {rows.map((a) => (
                 <tr key={a.id}>
                   <td data-label="Time" className="nowrap">
                     {fmtDateTime(a.at)}
@@ -293,7 +289,7 @@ export function AuditLogPage({ scope }) {
               ))}
             </tbody>
           </table>
-          <Pagination page={cur} pages={pages} total={rows.length} onPage={setPage} />
+          <Pagination page={cur} pages={pages} total={logs.data?.total || 0} onPage={setPage} />
         </div>
       )}
     </>
@@ -304,15 +300,24 @@ const NOTIF_TARGET = {
   teacher: { message: '/teacher/messages', journal: '/teacher/journal' },
   parent: { message: '/parent/messages', journal: '/parent/journal', camera: '/parent/camera', announcement: '/parent/announcements' },
 }
+const NOTIFICATION_PAGE = 50
 
+// The signed-in user's notifications from the backend; reading one updates the badges as well.
 export function useNotifications() {
-  const { db, user, mutate } = useStore()
-  const list = notificationsFor(db, user)
-  const markRead = (ids) =>
-    mutate((prev) => ({
-      notifications: prev.notifications.map((n) => (ids.includes(n.id) && !n.readBy.includes(user.id) ? { ...n, readBy: [...n.readBy, user.id] } : n)),
-    }))
-  return { list, markRead, isUnread: (n) => !n.readBy.includes(user.id) }
+  const { refreshCounts } = useStore()
+  const q = useApi(() => api.notifications.list({ limit: NOTIFICATION_PAGE }), [])
+  const list = (q.data?.items || []).map(toNotification)
+  const markRead = useCallback(
+    async (ids) => {
+      if (!ids.length) return
+      // optimistic: the dot disappears at once, the server confirms
+      q.setData((d) => d && { ...d, items: d.items.map((n) => (ids.includes(n.id) && !n.readAt ? { ...n, readAt: new Date().toISOString() } : n)) })
+      await (ids.length > 1 ? api.notifications.markAllRead() : api.notifications.markRead(ids[0])).catch(() => q.reload())
+      refreshCounts()
+    },
+    [q, refreshCounts],
+  )
+  return { list, markRead, isUnread: (n) => n.unread, loading: q.initial }
 }
 
 export function NotificationsPage() {
@@ -324,8 +329,8 @@ export function NotificationsPage() {
 
   const click = (n) => {
     markRead([n.id])
-    const target = NOTIF_TARGET[user.role]?.[n.type]
-    if (target) navigate(target)
+    const target = n.link || NOTIF_TARGET[user.role]?.[n.type]
+    if (target && target !== window.location.pathname) navigate(target)
     else setOpen(n)
   }
 

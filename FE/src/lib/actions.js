@@ -1,5 +1,5 @@
 import { Ban, CheckCircle2, KeyRound, Lock } from 'lucide-react'
-import { DEMO_PASSWORD } from '../store/store'
+import { INITIAL_PASSWORD } from '../store/store'
 import { STATUS } from './labels'
 
 // Activate / Deactivate / Lock menu entries shared by every account-like list.
@@ -38,12 +38,12 @@ export function resetPasswordAction({ row, reset, toast }) {
     icon: KeyRound,
     confirm: {
       title: `Reset the password of ${name}?`,
-      body: `The password goes back to the initial one (${DEMO_PASSWORD}). Ask them to change it after signing in.`,
+      body: `The password goes back to the initial one (${INITIAL_PASSWORD}). Ask them to change it after signing in.`,
       confirmLabel: 'Reset',
     },
     onClick: async () => {
       await reset()
-      toast(`Password reset. ${name} can sign in with ${DEMO_PASSWORD}.`)
+      toast(`Password reset. ${name} can sign in with ${INITIAL_PASSWORD}.`)
     },
   }
 }

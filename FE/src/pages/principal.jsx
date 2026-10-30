@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  AlertTriangle,
   Baby,
   BookOpen,
   CalendarClock,
@@ -24,20 +23,19 @@ import {
   Trash2,
   Unlink,
   Users,
-  Utensils,
   Video,
 } from 'lucide-react'
-import { DEMO_PASSWORD, useStore } from '../store/store'
-import { addDays, dayLabel, fmtDate, fmtDateTime, greeting, relTime, todayISO, uid } from '../lib/utils'
+import { INITIAL_PASSWORD, useStore } from '../store/store'
+import { addDays, dayLabel, fmtDate, fmtDateTime, greeting, relTime, todayISO } from '../lib/utils'
 import { api } from '../lib/api'
 import { useApi } from '../lib/useApi'
-import { GENDER, GENDER_OPTIONS, HEALTH, MEAL, RELATIONSHIP, RELATIONSHIP_OPTIONS, STATUS, STATUS_KEY, errorText, label, weekdaysText } from '../lib/labels'
+import { ANNOUNCEMENT_AUDIENCES, ANNOUNCEMENT_CATEGORIES, announcementParam, fromAnnouncement, fromYear, toAnnouncement, toAuditRow, toYear } from '../lib/mappers'
+import { GENDER, GENDER_OPTIONS, HEALTH, RELATIONSHIP, RELATIONSHIP_OPTIONS, STATUS, STATUS_KEY, errorText, label, weekdaysText } from '../lib/labels'
 import { resetPasswordAction, statusActions } from '../lib/actions'
 import CrudPage, { FormFields, validateFields } from '../components/CrudPage'
 import { CameraBadge, CameraPlayer, CameraPreview, CameraStatusText } from '../components/Camera'
-import { CategoryBarChart, RateTrendChart } from '../components/Charts'
 import { ActivityList } from './admin'
-import { Avatar, EmptyState, Loadable, Modal, PageHeader, Select, SkeletonCards, SkeletonTable, StatCard, StatusBadge, useToast } from '../components/ui'
+import { Avatar, EmptyState, Loadable, Modal, PageHeader, SegBar, Select, SkeletonCards, SkeletonTable, StatCard, StatusBadge, useToast } from '../components/ui'
 
 const ACCOUNT_STATUS = [
   { value: 'Active', label: 'Active' },
@@ -47,7 +45,6 @@ const USER_STATUS = ['Active', 'Inactive', 'Locked']
 const dateOf = (ts) => (ts ? fmtDate(String(ts).slice(0, 10)) : '—')
 const lastLogin = (u) => (u.lastLoginAt ? relTime(new Date(u.lastLoginAt).getTime()) : 'Never')
 const statusOf = (r) => STATUS[r.status] || r.status
-const JOURNAL_PROGRESS = { NOT_STARTED: 'Not Started', DRAFT: 'Draft', PARTIAL: 'In Progress', APPROVED: 'Completed' }
 const blankToNull = (v) => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim())
 const blankToUndef = (v) => blankToNull(v) ?? undefined
 
@@ -58,60 +55,43 @@ const useStudents = () => useApi(() => api.students.list(), [])
 
 // ---------- Dashboard ----------
 
-const RANGES = [
-  { value: '7', label: 'Last 7 days' },
-  { value: '14', label: 'Last 14 days' },
-  { value: '30', label: 'Last 30 days' },
-]
-
-// A stat card with an optional 0–100 meter under the value.
-function Kpi({ icon: Icon, label: text, value, hint, tint, meter }) {
-  return (
-    <div className="card stat-card">
-      <span className={`stat-icon tint-${tint}`}>
-        <Icon size={20} />
-      </span>
-      <div style={{ flex: 1 }}>
-        <div className="stat-label">{text}</div>
-        <div className="stat-value">{value}</div>
-        {hint && <div className="stat-hint">{hint}</div>}
-        {meter !== undefined && meter !== null && (
-          <div className="kpi-meter" role="img" aria-label={`${text}: ${value}`}>
-            <span style={{ width: `${Math.min(100, meter)}%` }} />
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
+// Today's journal of a class, as one of three steps for the principal.
+const JOURNAL_COMPLETION = { NOT_STARTED: 'Not Started', DRAFT: 'In Progress', PARTIAL: 'In Progress', APPROVED: 'Completed' }
 
 export function PrincipalDashboard() {
-  const { db, user } = useStore()
+  const { user } = useStore()
+  const activity = useApi(() => api.auditLogs.list({ limit: 6 }), [])
   const today = todayISO()
-  const [range, setRange] = useState('7')
-  const dash = useApi(() => api.reports.dashboard({ from: addDays(today, -(Number(range) - 1)), to: today }), [range])
+  const dash = useApi(() => api.reports.dashboard({ from: today, to: today }), [])
   const cams = useApi(() => api.cameras.list(), [])
   const classes = useClasses()
   const teacherOf = (classId) => classes.data?.find((c) => c.id === classId)?.homeroomTeacher?.fullName
 
   return (
     <>
-      <PageHeader title={`${greeting()}, ${user.name}`} subtitle="School overview" actions={<Select value={range} onChange={setRange} options={RANGES} aria-label="Period" />} />
+      <PageHeader title={`${greeting()}, ${user.name}`} subtitle="School overview for today" />
       <Loadable q={dash} skeleton={<SkeletonCards count={6} />}>
         {(d) => {
           const todays = d.today.classes
           const sum = (k) => todays.reduce((s, c) => s + c[k], 0)
-          const done = todays.filter((c) => c.journalState === 'APPROVED').length
+          const unrecorded = todays.reduce((s, c) => s + Math.max(0, c.total - c.present - c.absent), 0)
+          const progress = todays.map((c) => JOURNAL_COMPLETION[c.journalState])
+          const countOf = (v) => progress.filter((p) => p === v).length
           const attention = [
             ...(classes.data || [])
               .filter((c) => !c.homeroomTeacherId && c.status === 'ACTIVE')
               .map((c) => ({ icon: GraduationCap, title: 'No head teacher', body: `${c.name} has no head teacher assigned.` })),
             ...todays
               .filter((c) => c.logged === 0)
-              .map((c) => ({ icon: ClipboardCheck, title: 'Nothing recorded yet', body: `${c.className} has not recorded attendance or a journal today.` })),
+              .map((c) => ({ icon: ClipboardCheck, title: 'Attendance not recorded', body: `${c.className} has not recorded attendance today.` })),
             ...todays
-              .filter((c) => c.logged > 0 && c.journalState !== 'APPROVED')
-              .map((c) => ({ icon: BookOpen, title: 'Journal not approved', body: `${c.className}: ${c.approved} of ${c.total} entries approved.` })),
+              .map((c, i) => ({ c, p: progress[i] }))
+              .filter((x) => x.p !== 'Completed')
+              .map(({ c, p }) => ({
+                icon: BookOpen,
+                title: p === 'In Progress' ? 'Journal in progress' : 'Journal not started',
+                body: p === 'In Progress' ? `${c.className} journal is still being prepared.` : `${c.className} has not started today's journal.`,
+              })),
             ...d.healthAlerts
               .filter((h) => h.date === today)
               .map((h) => ({
@@ -120,7 +100,6 @@ export function PrincipalDashboard() {
                 body: `${label(HEALTH, h.healthStatus)}${h.temperature ? ` · ${h.temperature}°C` : ''}${h.note ? ` · ${h.note}` : ''}`,
               })),
           ]
-          const meals = Object.entries(d.nutrition.distribution).map(([k, v]) => ({ label: MEAL[k], value: v }))
           return (
             <>
               <div className="grid stats">
@@ -128,48 +107,37 @@ export function PrincipalDashboard() {
                 <StatCard icon={Baby} label="Students" value={d.overview.students} tint="peach" />
                 <StatCard icon={GraduationCap} label="Teachers" value={d.overview.teachers} tint="lav" />
                 <StatCard icon={CheckCircle2} label="Present Today" value={`${sum('present')} / ${sum('total')}`} tint="mint" />
-                <StatCard icon={BookOpen} label="Journals Approved Today" value={`${done} / ${todays.length}`} hint="classes" tint="cream" />
-                <StatCard icon={MessageCircle} label="Unread Messages" value={db.messages.filter((m) => !m.read).length} hint="between teachers and parents" tint="sky" />
-              </div>
-
-              <h2 className="section-title">
-                {RANGES.find((r) => r.value === range).label} · {fmtDate(d.range.from)} – {fmtDate(d.range.to)}
-              </h2>
-              <div className="grid stats">
-                <Kpi icon={ClipboardCheck} label="Attendance rate" value={`${d.kpis.attendanceRate}%`} tint="mint" meter={d.kpis.attendanceRate} />
-                <Kpi
-                  icon={BookOpen}
-                  label="Journal submission rate"
-                  value={`${d.kpis.submissionRate}%`}
-                  hint="entries approved / expected"
-                  tint="cream"
-                  meter={d.kpis.submissionRate}
-                />
-                <Kpi
-                  icon={Utensils}
-                  label="Nutrition index"
-                  value={d.kpis.nutritionIndex ?? '—'}
-                  hint="100 = every child ate everything"
-                  tint="peach"
-                  meter={d.kpis.nutritionIndex}
-                />
-                <Kpi icon={HeartPulse} label="Health alerts" value={d.kpis.healthAlerts} hint="children to monitor or unwell" tint="lav" />
+                <StatCard icon={BookOpen} label="Journal Completion" value={`${countOf('Completed')} / ${todays.length}`} hint="classes approved today" tint="cream" />
+                <StatCard icon={MessageCircle} label="Unread Messages" value={d.overview.unreadMessages ?? 0} hint="between teachers and parents" tint="sky" />
               </div>
 
               <div className="grid cols-2">
                 <section className="card">
                   <div className="card-head">
-                    <h2>Attendance &amp; journal approval</h2>
-                    <span className="muted small">% per school day</span>
+                    <h2>Attendance Overview</h2>
+                    <span className="muted small">{fmtDate(today)}</span>
                   </div>
-                  {d.attendanceTrend.length ? <RateTrendChart data={d.attendanceTrend} /> : <EmptyState title="No school days in this period." />}
+                  <SegBar
+                    parts={[
+                      { label: 'Present', value: sum('present'), tone: 'success' },
+                      { label: 'Absent', value: sum('absent'), tone: 'error' },
+                      { label: 'Not recorded', value: unrecorded, tone: 'neutral' },
+                    ]}
+                  />
                 </section>
+
                 <section className="card">
                   <div className="card-head">
-                    <h2>Meals eaten</h2>
-                    <span className="muted small">child-meals in the period</span>
+                    <h2>Journal Completion</h2>
+                    <span className="muted small">by class</span>
                   </div>
-                  {meals.some((m) => m.value) ? <CategoryBarChart data={meals} valueName="Meals" /> : <EmptyState title="No meals recorded yet." />}
+                  <SegBar
+                    parts={[
+                      { label: 'Completed', value: countOf('Completed'), tone: 'success' },
+                      { label: 'In Progress', value: countOf('In Progress'), tone: 'warning' },
+                      { label: 'Not Started', value: countOf('Not Started'), tone: 'neutral' },
+                    ]}
+                  />
                 </section>
               </div>
 
@@ -183,36 +151,28 @@ export function PrincipalDashboard() {
                     <tr>
                       <th>Class</th>
                       <th>Teacher</th>
-                      <th>Today</th>
-                      <th>Journal today</th>
+                      <th>Students</th>
                       <th>Attendance</th>
-                      <th>Submission</th>
-                      <th>Nutrition</th>
-                      <th>Avg. nap</th>
+                      <th>Journal</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {todays.map((c) => {
-                      const p = d.classes.find((x) => x.classId === c.classId)
-                      return (
-                        <tr key={c.classId}>
-                          <td data-label="Class" className="td-primary">
-                            {c.className}
-                          </td>
-                          <td data-label="Teacher">{teacherOf(c.classId) || <span className="muted">Not assigned</span>}</td>
-                          <td data-label="Today">{c.logged ? `${c.present} present · ${c.absent} absent` : <StatusBadge status="Not recorded" />}</td>
-                          <td data-label="Journal today">
-                            <StatusBadge status={JOURNAL_PROGRESS[c.journalState]} />
-                          </td>
-                          <td data-label="Attendance">{p ? `${p.attendanceRate}%` : '—'}</td>
-                          <td data-label="Submission">{p ? `${p.submissionRate}%` : '—'}</td>
-                          <td data-label="Nutrition">{p?.nutritionIndex ?? '—'}</td>
-                          <td data-label="Avg. nap">{p?.avgSleepMinutes ? `${p.avgSleepMinutes} min` : '—'}</td>
-                        </tr>
-                      )
-                    })}
+                    {todays.map((c, i) => (
+                      <tr key={c.classId}>
+                        <td data-label="Class" className="td-primary">
+                          {c.className}
+                        </td>
+                        <td data-label="Teacher">{teacherOf(c.classId) || <span className="muted">Not assigned</span>}</td>
+                        <td data-label="Students">{c.total}</td>
+                        <td data-label="Attendance">{c.logged ? `${c.present} present · ${c.absent} absent` : <StatusBadge status="Not recorded" />}</td>
+                        <td data-label="Journal">
+                          <StatusBadge status={progress[i]} />
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
+                {todays.length === 0 && <EmptyState icon={School} title="No classes yet." text="Create the first class in Classes." />}
               </section>
 
               <div className="grid cols-2">
@@ -223,6 +183,7 @@ export function PrincipalDashboard() {
                       <Video size={16} /> View Cameras
                     </Link>
                   </div>
+                  {cams.data?.length === 0 && <p className="muted small">No cameras have been added yet.</p>}
                   <ul className="plain-list">
                     {(cams.data || []).map((c) => (
                       <li key={c.id} className="row-between">
@@ -265,40 +226,10 @@ export function PrincipalDashboard() {
 
                 <section className="card">
                   <div className="card-head">
-                    <h2>Recent health alerts</h2>
-                    <Link to="/principal/reports">Health report</Link>
-                  </div>
-                  {d.healthAlerts.length === 0 ? (
-                    <EmptyState icon={HeartPulse} title="No health alerts in this period." />
-                  ) : (
-                    <ul className="plain-list">
-                      {d.healthAlerts.slice(0, 6).map((h) => (
-                        <li key={`${h.studentId}-${h.date}`} className="summary-item">
-                          <span className="summary-icon tint-peach">
-                            <AlertTriangle size={18} />
-                          </span>
-                          <div>
-                            <strong>
-                              {h.studentName} · {fmtDate(h.date)}
-                            </strong>
-                            <span className="muted block small">
-                              {label(HEALTH, h.healthStatus)}
-                              {h.temperature ? ` · ${h.temperature}°C` : ''}
-                              {h.note ? ` · ${h.note}` : ''}
-                            </span>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </section>
-
-                <section className="card">
-                  <div className="card-head">
                     <h2>Recent Activity</h2>
                     <Link to="/principal/audit">Open audit logs</Link>
                   </div>
-                  <ActivityList items={db.audit.filter((a) => a.role !== 'System Admin').slice(0, 6)} />
+                  <ActivityList items={(activity.data?.items || []).map(toAuditRow)} />
                 </section>
               </div>
             </>
@@ -319,14 +250,15 @@ const SCHOOL_FIELDS = [
 ]
 
 export function SchoolProfilePage() {
-  const { db, user } = useStore()
+  const { user } = useStore()
   const toast = useToast()
   const school = useApi(() => api.schools.mine(), [])
   const dash = useApi(() => api.reports.dashboard(), [])
   const [form, setForm] = useState(null)
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
-  const year = db.years.find((y) => y.status === 'Current')
+  const currentYear = useApi(() => api.academicYears.current(), [])
+  const year = currentYear.data
   const values = form || school.data
 
   const save = async (e) => {
@@ -411,7 +343,7 @@ export function SchoolProfilePage() {
   )
 }
 
-// ---------- Academic Year (local demo data: the backend stores the year on each class) ----------
+// ---------- Academic Year (classes store the year name, e.g. 2026-2027) ----------
 
 const YEAR_FIELDS = [
   { name: 'name', label: 'Academic Year', required: true, placeholder: 'e.g. 2027–2028' },
@@ -421,13 +353,17 @@ const YEAR_FIELDS = [
 ]
 
 export function AcademicYearPage() {
-  const { db, mutate, log } = useStore()
   const toast = useToast()
   const [editing, setEditing] = useState(undefined) // undefined = closed, null = new
   const [form, setForm] = useState({})
   const [errors, setErrors] = useState({})
-  const current = db.years.find((y) => y.status === 'Current')
-  const years = [...db.years].sort((a, b) => b.start.localeCompare(a.start))
+  const [saving, setSaving] = useState(false)
+  const classes = useClasses()
+  const yearsQ = useApi(() => api.academicYears.list(), [])
+  const years = (yearsQ.data || []).map(toYear) // newest first
+  const current = years.find((y) => y.status === 'Current')
+  // Classes store the year as "2026-2027"; the year name may be typed with an en dash.
+  const classCount = (y) => (classes.data || []).filter((c) => c.academicYear === y.name.trim().replace(/\s*[–—-]\s*/, '-')).length
 
   const open = (y) => {
     setForm(y || { name: '', status: 'Upcoming', start: '', end: '' })
@@ -435,22 +371,27 @@ export function AcademicYearPage() {
     setEditing(y)
   }
 
-  const save = (e) => {
+  const save = async (e) => {
     e.preventDefault()
     const errs = validateFields(YEAR_FIELDS, form)
-    if (!errs.name && db.years.some((y) => y.name.trim() === form.name.trim() && y.id !== editing?.id)) errs.name = 'This academic year already exists.'
+    const body = fromYear(form)
+    if (!errs.name && !/^\d{4}-\d{4}$/.test(body.name)) errs.name = 'Use two consecutive years, e.g. 2027–2028.'
+    if (!errs.name && years.some((y) => y.name === body.name && y.id !== editing?.id)) errs.name = 'This academic year already exists.'
     setErrors(errs)
-    if (Object.keys(errs).length) return
-    const item = { ...form, name: form.name.trim(), id: editing?.id || uid('y') }
-    // Only one year can be current: the previous one is archived.
-    mutate((prev) => ({
-      years: [...prev.years.filter((y) => y.id !== item.id), item].map((y) =>
-        item.status === 'Current' && y.id !== item.id && y.status === 'Current' ? { ...y, status: 'Archived' } : y,
-      ),
-    }))
-    log(editing ? 'Update' : 'Create', 'Academic Year', `Academic year ${editing ? 'updated' : 'created'}: ${item.name}`)
-    toast(`Academic year ${editing ? 'updated' : 'created'} successfully.`)
-    setEditing(undefined)
+    if (Object.keys(errs).length || saving) return
+    // Only one year can be current: the backend makes the previous current year inactive.
+    setSaving(true)
+    try {
+      if (editing) await api.academicYears.update(editing.id, body)
+      else await api.academicYears.create(body)
+      yearsQ.reload()
+      toast(`Academic year ${editing ? 'updated' : 'created'} successfully.`)
+      setEditing(undefined)
+    } catch (err) {
+      toast(errorText(err), 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -490,7 +431,7 @@ export function AcademicYearPage() {
               </div>
               <div>
                 <dt>Classes</dt>
-                <dd>{db.classes.filter((c) => c.yearId === current.id).length}</dd>
+                <dd>{classes.data ? classCount(current) : '—'}</dd>
               </div>
             </dl>
           </>
@@ -501,6 +442,7 @@ export function AcademicYearPage() {
 
       <div className="card">
         <h2>All Academic Years</h2>
+        {years.length === 0 && <EmptyState icon={CalendarDays} title="No academic years yet." text="Use Create Academic Year to add the first one." />}
         <ul className="plain-list">
           {years.map((y) => (
             <li key={y.id} className="row-between">
@@ -567,7 +509,6 @@ export function ClassesPage() {
       columns={[
         { key: 'name', label: 'Class Name', sort: (c) => c.name },
         { key: 'year', label: 'Academic Year', render: (c) => c.academicYear },
-        { key: 'ageGroup', label: 'Age Group' },
         { key: 'teacher', label: 'Head Teacher', render: (c) => teacherName(c) || <span className="muted">Not assigned</span> },
         { key: 'students', label: 'Students', sort: (c) => c.studentCount, render: (c) => c.studentCount },
         { key: 'status', label: 'Status', render: (c) => <StatusBadge status={statusOf(c)} /> },
@@ -581,7 +522,6 @@ export function ClassesPage() {
           placeholder: '2026-2027',
           validate: (v) => (!/^\d{4}-\d{4}$/.test(v || '') ? 'Use the form 2026-2027.' : ''),
         },
-        { name: 'ageGroup', label: 'Age Group', placeholder: 'e.g. 4-5 tuổi' },
         {
           name: 'homeroomTeacherId',
           label: 'Head Teacher',
@@ -593,11 +533,11 @@ export function ClassesPage() {
       ]}
       initial={(c) =>
         c
-          ? { name: c.name, academicYear: c.academicYear, ageGroup: c.ageGroup || '', homeroomTeacherId: c.homeroomTeacherId || '', status: statusOf(c) }
-          : { name: '', academicYear: rows[0]?.academicYear || '2026-2027', ageGroup: '', homeroomTeacherId: '' }
+          ? { name: c.name, academicYear: c.academicYear, homeroomTeacherId: c.homeroomTeacherId || '', status: statusOf(c) }
+          : { name: '', academicYear: rows[0]?.academicYear || '2026-2027', homeroomTeacherId: '' }
       }
       onSave={async (form, editing) => {
-        const body = { name: form.name.trim(), academicYear: form.academicYear.trim(), ageGroup: blankToUndef(form.ageGroup), homeroomTeacherId: form.homeroomTeacherId || null }
+        const body = { name: form.name.trim(), academicYear: form.academicYear.trim(), homeroomTeacherId: form.homeroomTeacherId || null }
         if (editing) await api.classes.update(editing.id, { ...body, status: STATUS_KEY[form.status] })
         else await api.classes.create(body)
         classes.reload()
@@ -605,7 +545,6 @@ export function ClassesPage() {
       viewRows={(c) => [
         ['Class Name', c.name],
         ['Academic Year', c.academicYear],
-        ['Age Group', c.ageGroup],
         ['Head Teacher', teacherName(c) || 'Not assigned'],
         ['Students', c.studentCount],
         ['Status', <StatusBadge status={statusOf(c)} />],
@@ -684,8 +623,8 @@ export function TeachersPage() {
       ]}
       fields={(form, editing) => [
         { name: 'fullName', label: 'Full Name', required: true },
-        { name: 'phone', label: 'Phone', type: 'tel', required: true, hint: editing ? undefined : `Used to sign in. Initial password: ${DEMO_PASSWORD}` },
-        { name: 'email', label: 'Email', type: 'email' },
+        { name: 'phone', label: 'Phone', type: 'tel', required: true, hint: editing ? undefined : `Used to sign in. Initial password: ${INITIAL_PASSWORD}` },
+        { name: 'email', label: 'Email', type: 'email', required: true },
         {
           name: 'classId',
           label: 'Assigned Class',
@@ -697,13 +636,18 @@ export function TeachersPage() {
           })),
           hint: 'Assigning replaces the current head teacher of that class.',
         },
+        { name: 'status', label: 'Status', type: 'select', required: true, options: USER_STATUS, placeholder: undefined },
       ]}
       initial={(t) =>
-        t ? { fullName: t.fullName, phone: t.phone, email: t.email || '', classId: classesOf(t)[0]?.id || '' } : { fullName: '', phone: '', email: '', classId: '' }
+        t
+          ? { fullName: t.fullName, phone: t.phone, email: t.email || '', classId: classesOf(t)[0]?.id || '', status: statusOf(t) }
+          : { fullName: '', phone: '', email: '', classId: '', status: 'Active' }
       }
-      onSave={async ({ classId, ...form }, editing) => {
+      onSave={async ({ classId, status, ...form }, editing) => {
         const body = { fullName: form.fullName.trim(), phone: form.phone.trim(), email: blankToUndef(form.email) }
         const saved = editing ? await api.users.update(editing.id, body) : await api.users.create({ ...body, role: 'TEACHER' })
+        // New accounts start Active; any other status (or a change) goes through the status endpoint.
+        if (status !== (editing ? statusOf(editing) : 'Active')) await api.users.setStatus(saved.id, STATUS_KEY[status])
         const before = editing ? classesOf(editing)[0]?.id || '' : ''
         if (classId !== before) {
           if (before) await api.classes.update(before, { homeroomTeacherId: null })
@@ -742,6 +686,9 @@ const parentsText = (s) =>
     .filter(Boolean)
     .join(', ')
 
+// The parent shown first for a child: the primary contact, else the first linked parent.
+const mainLink = (s) => s.parentLinks?.find((l) => l.isPrimary) || s.parentLinks?.[0]
+
 export function StudentsPage() {
   const toast = useToast()
   const students = useStudents()
@@ -760,6 +707,7 @@ export function StudentsPage() {
       onRetry={students.reload}
       searchText={(s) => `${s.fullName} ${s.class?.name || ''} ${parentsText(s)}`}
       searchPlaceholder="Search student, class or parent"
+      // the child's age is compared with the class's age group: a mismatch is a warning, not an error
       filters={[
         { key: 'class', label: 'classes', options: (classes.data || []).map((c) => ({ value: c.id, label: c.name })), get: (s) => s.classId },
         { key: 'status', label: 'statuses', options: ACCOUNT_STATUS, get: statusOf },
@@ -782,9 +730,16 @@ export function StudentsPage() {
         { key: 'allergies', label: 'Allergies', render: (s) => s.allergies || <span className="muted">None</span> },
         { key: 'status', label: 'Status', render: (s) => <StatusBadge status={statusOf(s)} /> },
       ]}
-      fields={(form, editing) => [
+      fields={(form) => [
+        { name: 'avatarUrl', label: 'Photo', type: 'photo', full: true },
         { name: 'fullName', label: 'Full Name', required: true },
-        { name: 'dateOfBirth', label: 'Date of Birth', type: 'date', required: true, validate: (v) => (v > todayISO() ? 'Date of birth cannot be in the future.' : '') },
+        {
+          name: 'dateOfBirth',
+          label: 'Date of Birth',
+          type: 'date',
+          required: true,
+          validate: (v) => (v > todayISO() ? 'Date of birth cannot be in the future.' : ''),
+        },
         { name: 'gender', label: 'Gender', type: 'select', required: true, options: GENDER_OPTIONS },
         {
           name: 'classId',
@@ -803,13 +758,13 @@ export function StudentsPage() {
           options: [
             { value: 'new', label: 'New parent — create an account now' },
             { value: 'existing', label: 'Parent already has an account (e.g. a sibling is enrolled)' },
-            { value: 'later', label: editing ? 'Keep the current parents' : 'Add the parent later' },
+            { value: 'later', label: 'Add the parent later' },
           ],
         },
         ...(form.parentMode === 'new'
           ? [
               { name: 'parentName', label: 'Parent Full Name', required: true },
-              { name: 'parentPhone', label: 'Parent Phone', type: 'tel', required: true, hint: `The parent signs in with this number. Initial password: ${DEMO_PASSWORD}` },
+              { name: 'parentPhone', label: 'Parent Phone', type: 'tel', required: true, hint: `The parent signs in with this number. Initial password: ${INITIAL_PASSWORD}` },
             ]
           : []),
         ...(form.parentMode === 'existing'
@@ -827,25 +782,27 @@ export function StudentsPage() {
         ...(form.parentMode !== 'later'
           ? [{ name: 'relationship', label: 'Relationship to the child', type: 'select', options: RELATIONSHIP_OPTIONS, placeholder: undefined }]
           : []),
-        ...(editing ? [{ name: 'status', label: 'Status', type: 'select', required: true, options: ACCOUNT_STATUS, placeholder: undefined }] : []),
-        { name: 'allergies', label: 'Allergies', placeholder: 'e.g. Dị ứng tôm, đậu phộng', hint: 'Shown to the teacher on every journal.' },
-        { name: 'medicalNote', label: 'Medical notes', type: 'textarea', rows: 3, placeholder: 'Medication, pick-up arrangements, things the teacher should know' },
+        { name: 'status', label: 'Status', type: 'select', required: true, options: ACCOUNT_STATUS, placeholder: undefined },
+        { name: 'medicalNote', label: 'Notes for the teacher', type: 'textarea', rows: 3, placeholder: 'Allergies, pick-up arrangements, things the teacher should know' },
       ]}
-      initial={(s) =>
-        s
+      initial={(s) => {
+        // Editing shows the child's main parent, already selected, so it can be kept or changed.
+        const link = s && mainLink(s)
+        return s
           ? {
+              avatarUrl: s.avatarUrl || '',
               fullName: s.fullName,
               dateOfBirth: s.dateOfBirth,
               gender: s.gender,
               classId: s.classId,
-              parentMode: 'later',
-              parentId: '',
-              relationship: 'MOTHER',
+              parentMode: link ? 'existing' : 'later',
+              parentId: link?.parentId || '',
+              relationship: link?.relationship || 'MOTHER',
               status: statusOf(s),
-              allergies: s.allergies || '',
               medicalNote: s.medicalNote || '',
             }
           : {
+              avatarUrl: '',
               fullName: '',
               dateOfBirth: '',
               gender: '',
@@ -855,17 +812,36 @@ export function StudentsPage() {
               parentPhone: '',
               parentId: '',
               relationship: 'MOTHER',
-              allergies: '',
+              status: 'Active',
               medicalNote: '',
             }
-      }
-      onSave={async ({ parentMode, parentId, parentName, parentPhone, relationship, status, ...form }, editing) => {
+      }}
+      onSave={async ({ parentMode, parentId, parentName, parentPhone, relationship, status, avatarUrl, ...form }, editing) => {
         // Create the parent first: a phone number already in use fails before the student is created.
         let linkTo = parentMode === 'existing' ? parentId : ''
         if (parentMode === 'new') linkTo = (await api.users.create({ fullName: parentName.trim(), phone: parentPhone.trim(), role: 'PARENT' })).id
-        const body = { ...form, fullName: form.fullName.trim(), allergies: blankToNull(form.allergies), medicalNote: blankToNull(form.medicalNote) }
-        const saved = editing ? await api.students.update(editing.id, { ...body, status: STATUS_KEY[status] }) : await api.students.create(body)
-        if (linkTo) await api.students.linkParent(saved.id, linkTo, relationship, !saved.parentLinks?.length)
+        const body = { ...form, fullName: form.fullName.trim(), medicalNote: blankToNull(form.medicalNote) }
+        let saved
+        try {
+          saved = editing ? await api.students.update(editing.id, { ...body, status: STATUS_KEY[status] }) : await api.students.create(body)
+          // a new student starts Active; another status chosen in the form is applied right after
+          if (!editing && status !== 'Active') saved = await api.students.update(saved.id, { status: STATUS_KEY[status] })
+        } catch (err) {
+          // do not leave a parent account behind for a student that was not saved (a retry would hit "phone in use")
+          if (parentMode === 'new') await api.users.remove(linkTo).catch(() => {})
+          throw err
+        }
+        // The chosen parent replaces the main one; nothing is sent when the parent and relationship are unchanged.
+        const current = editing && mainLink(editing)
+        if (linkTo && (current?.parentId !== linkTo || current.relationship !== relationship)) {
+          await api.students.linkParent(saved.id, linkTo, relationship, current ? current.isPrimary || current.parentId !== linkTo : true)
+          if (current && current.parentId !== linkTo) await api.students.unlinkParent(saved.id, current.parentId)
+        }
+        // A newly picked photo is still a data URL in the form: upload it as a file.
+        if (avatarUrl?.startsWith('data:')) {
+          const blob = await (await fetch(avatarUrl)).blob()
+          await api.students.uploadAvatar(saved.id, new File([blob], `avatar.${blob.type.split('/')[1] || 'jpg'}`, { type: blob.type }))
+        }
         students.reload()
         if (parentMode === 'new') parents.reload()
       }}
@@ -875,8 +851,7 @@ export function StudentsPage() {
         ['Gender', label(GENDER, s.gender)],
         ['Class', s.class?.name],
         ['Parent', s.parentLinks.map((l) => `${l.parent?.fullName} (${label(RELATIONSHIP, l.relationship)})`).join(', ')],
-        ['Allergies', s.allergies],
-        ['Medical notes', s.medicalNote],
+        ['Notes for the teacher', s.medicalNote],
         ['Status', <StatusBadge status={statusOf(s)} />],
       ]}
       actions={(row) => [
@@ -948,8 +923,9 @@ export function ParentsPage() {
       ]}
       fields={(form, editing) => [
         { name: 'fullName', label: 'Full Name', required: true },
-        { name: 'phone', label: 'Phone', type: 'tel', required: true, hint: editing ? undefined : `Used to sign in. Initial password: ${DEMO_PASSWORD}` },
-        { name: 'email', label: 'Email', type: 'email' },
+        { name: 'phone', label: 'Phone', type: 'tel', required: true, hint: editing ? undefined : `Used to sign in. Initial password: ${INITIAL_PASSWORD}` },
+        { name: 'email', label: 'Email', type: 'email', hint: 'Needed for the parent to reset a forgotten password.' },
+        { name: 'status', label: 'Account Status', type: 'select', required: true, options: USER_STATUS, placeholder: undefined },
         { name: 'address', label: 'Address', full: true },
         // The child may not be enrolled yet, so a new parent can bring a new student with them.
         {
@@ -993,10 +969,32 @@ export function ParentsPage() {
         ...(form.childMode !== 'later'
           ? [{ name: 'relationship', label: 'Relationship to the child', type: 'select', options: RELATIONSHIP_OPTIONS, placeholder: undefined }]
           : []),
+        {
+          name: 'cameraAccess',
+          label: 'Classroom Camera',
+          type: 'select',
+          placeholder: undefined,
+          options: [
+            { value: 'yes', label: 'Allowed during scheduled times' },
+            { value: 'no', label: 'Not allowed' },
+          ],
+        },
       ]}
-      initial={(p) =>
-        p
-          ? { fullName: p.fullName, phone: p.phone, email: p.email || '', address: p.address || '', childMode: 'later', studentId: '', relationship: 'MOTHER' }
+      initial={(p) => {
+        // Editing shows the parent's first linked child, already selected, so it can be kept or changed.
+        const link = p && linksOf(p)[0]
+        return p
+          ? {
+              fullName: p.fullName,
+              phone: p.phone,
+              email: p.email || '',
+              status: statusOf(p),
+              address: p.address || '',
+              childMode: link ? 'existing' : 'later',
+              studentId: link?.studentId || '',
+              relationship: link?.relationship || 'MOTHER',
+              cameraAccess: p.cameraAccess === false ? 'no' : 'yes',
+            }
           : {
               fullName: '',
               phone: '',
@@ -1009,14 +1007,35 @@ export function ParentsPage() {
               childClassId: '',
               studentId: '',
               relationship: 'MOTHER',
+              status: 'Active',
+              cameraAccess: 'yes',
             }
-      }
-      onSave={async ({ childMode, studentId, childName, childDob, childGender, childClassId, relationship, ...form }, editing) => {
-        const body = { fullName: form.fullName.trim(), phone: form.phone.trim(), email: blankToUndef(form.email), address: blankToUndef(form.address) }
+      }}
+      onSave={async ({ childMode, studentId, childName, childDob, childGender, childClassId, relationship, status, cameraAccess, ...form }, editing) => {
+        const body = {
+          fullName: form.fullName.trim(),
+          phone: form.phone.trim(),
+          email: blankToUndef(form.email),
+          address: blankToUndef(form.address),
+          cameraAccess: cameraAccess === 'yes',
+        }
         const saved = editing ? await api.users.update(editing.id, body) : await api.users.create({ ...body, role: 'PARENT' })
+        // New accounts start Active; any other status (or a change) goes through the status endpoint.
+        if (status !== (editing ? statusOf(editing) : 'Active')) await api.users.setStatus(saved.id, STATUS_KEY[status])
         let linkTo = childMode === 'existing' ? studentId : ''
-        if (childMode === 'new') linkTo = (await api.students.create({ fullName: childName.trim(), dateOfBirth: childDob, gender: childGender, classId: childClassId })).id
-        if (linkTo) await api.students.linkParent(linkTo, saved.id, relationship, false)
+        try {
+          if (childMode === 'new') linkTo = (await api.students.create({ fullName: childName.trim(), dateOfBirth: childDob, gender: childGender, classId: childClassId })).id
+        } catch (err) {
+          // a new parent whose child could not be saved is removed again, so the form can simply be resubmitted
+          if (!editing) await api.users.remove(saved.id).catch(() => {})
+          throw err
+        }
+        // The chosen child replaces the first linked one; nothing is sent when the child and relationship are unchanged.
+        const current = editing && linksOf(editing)[0]
+        if (linkTo && (current?.studentId !== linkTo || current.relationship !== relationship)) {
+          await api.students.linkParent(linkTo, saved.id, relationship, current?.studentId === linkTo ? current.isPrimary : false)
+          if (current && current.studentId !== linkTo) await api.students.unlinkParent(current.studentId, saved.id)
+        }
         reload()
       }}
       viewRows={(p) => [
@@ -1026,6 +1045,7 @@ export function ParentsPage() {
         ['Address', p.address],
         ['Child', children(p)],
         ['Relationship', relation(p)],
+        ['Classroom Camera', p.cameraAccess === false ? 'Not allowed' : 'Allowed during scheduled times'],
         ['Account Status', <StatusBadge status={statusOf(p)} />],
         ['Last Login', p.lastLoginAt ? fmtDateTime(new Date(p.lastLoginAt).getTime()) : 'Never'],
       ]}
@@ -1053,6 +1073,7 @@ export function RelationshipsPage() {
       student: s,
       relationship: l.relationship,
       isPrimary: l.isPrimary,
+      status: l.status,
     })),
   )
   const name = (r) => `${r.parent?.fullName || 'Unknown'} → ${r.student.fullName}`
@@ -1077,6 +1098,7 @@ export function RelationshipsPage() {
         { key: 'relationship', label: 'Relationship', render: (r) => label(RELATIONSHIP, r.relationship) },
         { key: 'className', label: 'Class', render: (r) => r.student.class?.name },
         { key: 'primary', label: 'Primary contact', render: (r) => (r.isPrimary ? <span className="chip">Yes</span> : <span className="muted">—</span>) },
+        { key: 'status', label: 'Status', render: (r) => <StatusBadge status={statusOf(r)} /> },
       ]}
       fields={[
         {
@@ -1096,26 +1118,20 @@ export function RelationshipsPage() {
           options: (students.data || []).map((s) => ({ value: s.id, label: s.fullName, sub: s.class?.name })),
         },
         { name: 'relationship', label: 'Relationship', type: 'select', required: true, options: RELATIONSHIP_OPTIONS, placeholder: undefined },
-        {
-          name: 'isPrimary',
-          label: 'Primary contact',
-          type: 'select',
-          placeholder: undefined,
-          options: [
-            { value: 'no', label: 'No' },
-            { value: 'yes', label: 'Yes — the school calls this parent first' },
-          ],
-        },
+        // Inactive keeps the link on record, but the parent no longer sees the child (journal, camera, messages).
+        { name: 'status', label: 'Status', type: 'select', required: true, options: ACCOUNT_STATUS, placeholder: undefined },
       ]}
       initial={(r) =>
         r
-          ? { parentId: r.parentId, studentId: r.studentId, relationship: r.relationship, isPrimary: r.isPrimary ? 'yes' : 'no' }
-          : { parentId: '', studentId: '', relationship: 'MOTHER', isPrimary: 'no' }
+          ? { parentId: r.parentId, studentId: r.studentId, relationship: r.relationship, status: statusOf(r) }
+          : { parentId: '', studentId: '', relationship: 'MOTHER', status: 'Active' }
       }
       onSave={async (form, editing) => {
-        if (!editing && rows.some((r) => r.parentId === form.parentId && r.studentId === form.studentId)) return 'This parent is already linked to this child.'
+        if (rows.some((r) => r !== editing && r.parentId === form.parentId && r.studentId === form.studentId)) return 'This parent is already linked to this child.'
         if (editing && (editing.parentId !== form.parentId || editing.studentId !== form.studentId)) await api.students.unlinkParent(editing.studentId, editing.parentId)
-        await api.students.linkParent(form.studentId, form.parentId, form.relationship, form.isPrimary === 'yes')
+        // An edited link keeps its primary flag; a child's first parent becomes the primary contact.
+        const isPrimary = editing ? editing.isPrimary : !rows.some((r) => r.studentId === form.studentId)
+        await api.students.linkParent(form.studentId, form.parentId, form.relationship, isPrimary, STATUS_KEY[form.status])
         students.reload()
       }}
       viewRows={(r) => [
@@ -1124,7 +1140,7 @@ export function RelationshipsPage() {
         ['Child', r.student.fullName],
         ['Class', r.student.class?.name],
         ['Relationship', label(RELATIONSHIP, r.relationship)],
-        ['Primary contact', r.isPrimary ? 'Yes' : 'No'],
+        ['Status', <StatusBadge status={statusOf(r)} />],
       ]}
       actions={(row) => [
         {
@@ -1199,7 +1215,7 @@ export function CameraMonitoringPage() {
         }
       </Loadable>
       <p className="privacy-note">
-        <ShieldCheck size={16} /> Streams are private to the school. The demo uses public sample HLS streams.
+        <ShieldCheck size={16} /> Streams are private to the school: parents only receive the link during the viewing times.
       </p>
       <Modal open={!!open} title={open ? `${open.class?.name} · ${open.name}` : ''} onClose={() => setOpen(null)} size="lg">
         {open && <CameraPlayer src={open.streamUrl} label={open.class?.name} />}
@@ -1334,11 +1350,75 @@ export function CameraSchedulePage() {
 
 // ---------- Reports (built and exported by the backend) ----------
 
+const REPORT_STATE = { PUBLISHED: 'Published', APPROVED: 'Approved', PENDING: 'Pending', IN_PROGRESS: 'In Progress', DRAFT: 'Draft' }
+const REPORT_SOURCE = { VOICE: 'Voice (AI-assisted)', MANUAL: 'Manual entry' }
+
+// What each tab shows: the backend rows carry codes; headers and labels are the screen's (exported files use their own).
 const REPORTS = [
-  { key: 'attendance', label: 'Attendance' },
-  { key: 'journals', label: 'Journal Submission' },
-  { key: 'nutrition', label: 'Nutrition & Sleep' },
-  { key: 'health', label: 'Health Alerts' },
+  {
+    key: 'attendance',
+    label: 'Attendance',
+    dated: true,
+    columns: [
+      { key: 'date', header: 'Date', format: 'date' },
+      { key: 'className', header: 'Class' },
+      { key: 'present', header: 'Present' },
+      { key: 'absent', header: 'Absent' },
+      { key: 'unrecorded', header: 'Not recorded' },
+      { key: 'rate', header: 'Attendance rate', format: 'percent' },
+    ],
+  },
+  {
+    key: 'journals',
+    label: 'Journal Completion',
+    dated: true,
+    columns: [
+      { key: 'date', header: 'Date', format: 'date' },
+      { key: 'className', header: 'Class' },
+      { key: 'status', header: 'Status', badge: REPORT_STATE },
+      { key: 'createdWith', header: 'Created with', labels: REPORT_SOURCE },
+      { key: 'photos', header: 'Photos' },
+      { key: 'lastEdited', header: 'Last edited', format: 'datetime' },
+    ],
+  },
+  {
+    key: 'activity',
+    label: 'Class Activity',
+    dated: true,
+    columns: [
+      { key: 'className', header: 'Class' },
+      { key: 'teacher', header: 'Head Teacher' },
+      { key: 'students', header: 'Students' },
+      { key: 'attendanceDays', header: 'Days with attendance' },
+      { key: 'journalsPublished', header: 'Journals published' },
+      { key: 'photos', header: 'Photos shared' },
+      { key: 'messages', header: 'Messages' },
+    ],
+  },
+  {
+    key: 'students',
+    label: 'Students',
+    columns: [
+      { key: 'fullName', header: 'Full Name' },
+      { key: 'dateOfBirth', header: 'Date of Birth', format: 'date' },
+      { key: 'gender', header: 'Gender', labels: GENDER },
+      { key: 'className', header: 'Class' },
+      { key: 'parents', header: 'Parent' },
+      { key: 'status', header: 'Status', badge: STATUS },
+    ],
+  },
+  {
+    key: 'parents',
+    label: 'Parents',
+    columns: [
+      { key: 'parent', header: 'Parent' },
+      { key: 'phone', header: 'Phone' },
+      { key: 'child', header: 'Child' },
+      { key: 'className', header: 'Class' },
+      { key: 'relationship', header: 'Relationship', labels: RELATIONSHIP },
+      { key: 'status', header: 'Status', badge: STATUS },
+    ],
+  },
 ]
 
 export function ReportsPage() {
@@ -1350,15 +1430,24 @@ export function ReportsPage() {
   const [classId, setClassId] = useState('')
   const [busy, setBusy] = useState('')
   const classes = useClasses()
-  const q = useApi(() => api.reports.table({ type, from, to, classId: classId || undefined }), [type, from, to, classId])
   const meta = REPORTS.find((r) => r.key === type)
+  const range = meta.dated ? { from, to } : {}
+  const q = useApi(() => api.reports.table({ type, ...range, classId: classId || undefined }), [type, meta.dated && from, meta.dated && to, classId])
   const report = q.data
-  const cell = (c, v) => (v === null || v === undefined || v === '' ? '—' : c.format === 'percent' ? `${v}%` : c.format === 'date' ? fmtDate(v) : v)
+  const cell = (c, v) => {
+    if (v === null || v === undefined || v === '') return '—'
+    if (c.badge) return <StatusBadge status={c.badge[v] || v} />
+    if (c.labels) return c.labels[v] || v
+    if (c.format === 'percent') return `${v}%`
+    if (c.format === 'date') return fmtDate(v)
+    if (c.format === 'datetime') return fmtDateTime(new Date(String(v).replace(' ', 'T')).getTime())
+    return v
+  }
 
   const download = async (format) => {
     setBusy(format)
     try {
-      await api.reports.download({ type, format, from, to, classId: classId || undefined })
+      await api.reports.download({ type, format, ...range, classId: classId || undefined })
     } catch (e) {
       toast(errorText(e), 'error')
     } finally {
@@ -1370,7 +1459,7 @@ export function ReportsPage() {
     <>
       <PageHeader
         title="Reports"
-        subtitle="Attendance, journals, nutrition and health — generated by the server"
+        subtitle="Attendance, journals and class records"
         actions={
           <>
             <button className="btn" onClick={() => download('pdf')} disabled={!report?.rows.length || !!busy}>
@@ -1390,9 +1479,13 @@ export function ReportsPage() {
         ))}
       </div>
       <div className="toolbar">
-        <input type="date" className="date-input" value={from} max={to} onChange={(e) => e.target.value && setFrom(e.target.value)} aria-label="From date" />
-        <span className="muted">to</span>
-        <input type="date" className="date-input" value={to} min={from} max={today} onChange={(e) => e.target.value && setTo(e.target.value)} aria-label="To date" />
+        {meta.dated && (
+          <>
+            <input type="date" className="date-input" value={from} max={to} onChange={(e) => e.target.value && setFrom(e.target.value)} aria-label="From date" />
+            <span className="muted">to</span>
+            <input type="date" className="date-input" value={to} min={from} max={today} onChange={(e) => e.target.value && setTo(e.target.value)} aria-label="To date" />
+          </>
+        )}
         <Select value={classId} onChange={setClassId} options={(classes.data || []).map((c) => ({ value: c.id, label: c.name }))} placeholder="All classes" aria-label="Class" />
       </div>
 
@@ -1400,20 +1493,21 @@ export function ReportsPage() {
         {(r) =>
           r.rows.length === 0 ? (
             <div className="card">
-              <EmptyState title="No records for this selection." text="Try a wider date range or another class." />
+              <EmptyState title="No records for this selection." text={meta.dated ? 'Try a wider date range or another class.' : 'Try another class.'} />
             </div>
           ) : (
             <div className="card table-card">
               <div className="card-head pad">
                 <h2>{meta.label}</h2>
                 <span className="muted small">
-                  {fmtDate(from)} – {fmtDate(to)} · {r.rows.length} {r.rows.length === 1 ? 'row' : 'rows'}
+                  {meta.dated ? `${fmtDate(from)} – ${fmtDate(to)} · ` : ''}
+                  {r.rows.length} {r.rows.length === 1 ? 'row' : 'rows'}
                 </span>
               </div>
               <table className="table">
                 <thead>
                   <tr>
-                    {r.columns.map((c) => (
+                    {meta.columns.map((c) => (
                       <th key={c.key}>{c.header}</th>
                     ))}
                   </tr>
@@ -1421,9 +1515,9 @@ export function ReportsPage() {
                 <tbody>
                   {r.rows.map((row, i) => (
                     <tr key={i}>
-                      {r.columns.map((c, j) => (
+                      {meta.columns.map((c, j) => (
                         <td key={c.key} data-label={c.header} className={j === 0 ? 'td-primary' : ''}>
-                          {c.key === 'healthStatus' ? <StatusBadge status={label(HEALTH, row[c.key])} /> : cell(c, row[c.key])}
+                          {cell(c, row[c.key])}
                         </td>
                       ))}
                     </tr>
@@ -1438,21 +1532,15 @@ export function ReportsPage() {
   )
 }
 
-// ---------- School Announcements (local demo data: the backend has no announcements module) ----------
+// ---------- School Announcements ----------
 
-const AUDIENCES = ['Teachers', 'Parents', 'Teachers & Parents']
-const CATEGORIES = ['Holiday', 'School Activity', 'Important Notice', 'Reminder']
+const AUDIENCES = ANNOUNCEMENT_AUDIENCES
+const CATEGORIES = ANNOUNCEMENT_CATEGORIES
 
 export function AnnouncementsPage() {
-  const { db, upsert, remove, log, notify } = useStore()
   const toast = useToast()
-
-  // Publishing sends one notification to each audience; it shows up in their Notifications with read state.
-  const distribute = (a) => {
-    const roles = a.audience === 'Teachers' ? ['teacher'] : a.audience === 'Parents' ? ['parent'] : ['teacher', 'parent']
-    roles.forEach((role) => notify({ role, type: 'announcement', title: a.title, body: a.content.length > 110 ? `${a.content.slice(0, 110)}…` : a.content }))
-    log('Publish', 'Announcements', `Announcement published: ${a.title}`)
-  }
+  // Publishing makes the backend notify every teacher / parent of the audience (in their Notifications).
+  const q = useApi(() => api.announcements.list({ limit: 100 }), [])
 
   return (
     <CrudPage
@@ -1460,12 +1548,15 @@ export function AnnouncementsPage() {
       subtitle="School-wide notices for teachers and parents"
       noun="Announcement"
       addLabel="Create Announcement"
-      rows={[...db.announcements].sort((a, b) => b.createdAt - a.createdAt)}
+      rows={(q.data?.items || []).map(toAnnouncement)}
+      loading={q.loading}
+      error={q.error}
+      onRetry={q.reload}
       searchText={(a) => `${a.title} ${a.content} ${a.category}`}
       searchPlaceholder="Search announcements"
       filters={[
         { key: 'category', label: 'categories', options: CATEGORIES, get: (a) => a.category },
-        { key: 'status', label: 'statuses', options: ['Draft', 'Published'], get: (a) => a.status },
+        { key: 'status', label: 'statuses', options: ['Draft', 'Scheduled', 'Published'], get: (a) => a.status },
       ]}
       columns={[
         { key: 'title', label: 'Title', sort: (a) => a.title },
@@ -1475,16 +1566,23 @@ export function AnnouncementsPage() {
         { key: 'expiryDate', label: 'Expiry Date', render: (a) => fmtDate(a.expiryDate) },
         { key: 'status', label: 'Status', render: (a) => <StatusBadge status={a.status} /> },
       ]}
-      fields={[
+      fields={(form, editing) => [
         { name: 'title', label: 'Title', required: true, full: true, placeholder: 'e.g. Holiday Notice' },
         { name: 'category', label: 'Category', type: 'select', required: true, options: CATEGORIES },
         { name: 'audience', label: 'Audience', type: 'select', required: true, options: AUDIENCES },
-        { name: 'publishDate', label: 'Publish Date', type: 'date', required: true },
+        // Today publishes at once; a later day schedules it. Once readers have it, the date no longer changes.
+        {
+          name: 'publishDate',
+          label: 'Publish Date',
+          type: 'date',
+          required: true,
+          validate: (v) => (editing?.status !== 'Published' && v < todayISO() ? 'Publish date cannot be in the past.' : ''),
+        },
         {
           name: 'expiryDate',
           label: 'Expiry Date',
           type: 'date',
-          validate: (v, f) => (v && f.publishDate && v < f.publishDate ? 'Expiry date cannot be before the publish date.' : ''),
+          validate: (v) => (v && v < todayISO() ? 'Expiry date cannot be in the past.' : v && v < form.publishDate ? 'Expiry date is before the publish date.' : ''),
         },
         { name: 'content', label: 'Content', type: 'textarea', required: true, rows: 5 },
       ]}
@@ -1492,12 +1590,15 @@ export function AnnouncementsPage() {
         { label: 'Save Draft', patch: { status: 'Draft' } },
         { label: 'Publish', primary: true, patch: { status: 'Published' } },
       ]}
-      initial={(a) => a || { title: '', category: '', audience: 'Teachers & Parents', publishDate: todayISO(), expiryDate: '', content: '', status: 'Draft' }}
-      onSave={(form, editing) => {
-        const item = { ...form, id: editing?.id || uid('an'), title: form.title.trim(), createdAt: editing?.createdAt || Date.now() }
-        upsert('announcements', item)
-        if (item.status === 'Published' && editing?.status !== 'Published') distribute(item)
-        else log(editing ? 'Update' : 'Create', 'Announcements', `Announcement ${editing ? 'updated' : 'saved as draft'}: ${item.title}`)
+      initial={(a) =>
+        a
+          ? { ...a, publishDate: a.publishDate || todayISO() }
+          : { title: '', category: '', audience: 'Teachers & Parents', publishDate: todayISO(), expiryDate: '', content: '', status: 'Draft' }
+      }
+      onSave={async (form, editing) => {
+        if (editing) await api.announcements.update(editing.id, fromAnnouncement(form))
+        else await api.announcements.create(fromAnnouncement(form))
+        q.reload()
       }}
       viewRows={(a) => [
         ['Title', a.title],
@@ -1509,14 +1610,14 @@ export function AnnouncementsPage() {
         ['Content', a.content],
       ]}
       actions={(row) => [
-        row.status !== 'Published' && {
+        row.status === 'Draft' && {
           label: 'Publish',
           icon: Send,
-          confirm: { title: `Publish “${row.title}”?`, body: `${row.audience} will receive this announcement in their notifications.` },
-          onClick: () => {
-            upsert('announcements', { id: row.id, status: 'Published' })
-            distribute(row)
-            toast('Announcement published.')
+          confirm: { title: `Publish “${row.title}”?`, body: 'Teachers will receive this announcement in their notifications.' },
+          onClick: async () => {
+            await api.announcements.update(row.id, { status: announcementParam.status('Published'), publishOn: row.publishDate || undefined })
+            q.reload()
+            toast(row.publishDate > todayISO() ? `Scheduled for ${fmtDate(row.publishDate)}.` : 'Announcement published.')
           },
         },
         {
@@ -1524,9 +1625,9 @@ export function AnnouncementsPage() {
           icon: Trash2,
           danger: true,
           confirm: { title: `Delete “${row.title}”?`, body: 'The announcement will be removed for everyone.' },
-          onClick: () => {
-            remove('announcements', row.id)
-            log('Delete', 'Announcements', `Announcement deleted: ${row.title}`)
+          onClick: async () => {
+            await api.announcements.remove(row.id)
+            q.reload()
             toast('Announcement deleted.')
           },
         },

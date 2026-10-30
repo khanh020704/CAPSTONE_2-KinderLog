@@ -15,11 +15,12 @@
     "migration:generate": "npm run typeorm -- migration:generate src/database/migrations/Migration",
     "migration:run": "npm run db:create && npm run typeorm -- migration:run",
     "migration:revert": "npm run typeorm -- migration:revert",
-    "seed": "ts-node src/database/seeds/seed.ts",
-    "db:reset": "npm run typeorm -- schema:drop && npm run migration:run && npm run seed",
+    "db:reset": "npm run typeorm -- schema:drop && npm run migration:run && npm run db:seed:admin",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
     "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
-    "db:create": "ts-node src/database/create-database.ts"
+    "db:create": "ts-node src/database/create-database.ts",
+    "db:seed:admin": "ts-node src/database/seeds/admin.seed.ts",
+    "db:clean": "ts-node src/database/clean-database.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",

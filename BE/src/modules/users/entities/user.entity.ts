@@ -39,4 +39,8 @@ export class User extends BaseEntity {
 
   @Column({ name: 'last_login_at', type: 'datetime2', nullable: true })
   lastLoginAt: Date | null;
+
+  /** Parents only: whether the classroom camera may be watched (during its scheduled times). */
+  @Column({ name: 'camera_access', default: true })
+  cameraAccess: boolean;
 }

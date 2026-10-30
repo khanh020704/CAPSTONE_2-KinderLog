@@ -1,31 +1,50 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Activity, Cpu, Database, HardDrive, Lock, RefreshCw, RotateCcw, School, Sparkles, UserCog, CheckCircle2 } from 'lucide-react'
-import { DEMO_PASSWORD, useStore } from '../store/store'
-import { fmtDate, fmtDateTime, relTime, todayISO } from '../lib/utils'
+import { Activity, Cpu, Database, HardDrive, Lock, RefreshCw, School, Sparkles, UserCog, CheckCircle2 } from 'lucide-react'
+import { INITIAL_PASSWORD, useStore } from '../store/store'
+import { fmtBytes, fmtDate, fmtDateTime, relTime, todayISO } from '../lib/utils'
 import { api } from '../lib/api'
 import { useApi } from '../lib/useApi'
+import { toAuditRow } from '../lib/mappers'
 import { STATUS, STATUS_KEY, errorText } from '../lib/labels'
 import { resetPasswordAction, statusActions } from '../lib/actions'
 import CrudPage, { FormFields, validateFields } from '../components/CrudPage'
-import { CategoryBarChart } from '../components/Charts'
-import { Avatar, ConfirmDialog, Loadable, PageHeader, SkeletonCards, StatCard, StatusBadge, useToast } from '../components/ui'
+import { Avatar, Loadable, PageHeader, SkeletonCards, StatCard, StatusBadge, useToast } from '../components/ui'
 
 const USER_STATUS = ['Active', 'Inactive', 'Locked']
 const statusOf = (r) => STATUS[r.status] || r.status
 const dateOf = (ts) => (ts ? fmtDate(String(ts).slice(0, 10)) : '—')
 const blankToUndef = (v) => (v === undefined || v === null || String(v).trim() === '' ? undefined : String(v).trim())
 
-// Sample infrastructure figures: the demo has no metrics agent. The API/database row is checked live.
-const SERVICES = [
-  { name: 'File storage', status: 'Operational', detail: 'Photos and attachments' },
-  { name: 'Notification service', status: 'Operational', detail: 'Queue empty' },
-]
-const RESOURCES = [
-  { icon: HardDrive, label: 'Storage', value: 38, text: '38.4 GB of 100 GB' },
-  { icon: Cpu, label: 'CPU', value: 23, text: '23% average load' },
-  { icon: Database, label: 'Memory', value: 54, text: '4.3 GB of 8 GB' },
-]
+// Server figures measured by the backend (GET /system/metrics) each time the page loads or is refreshed.
+const useMetrics = () => useApi(() => api.system.metrics(), [])
+const share = (used, total) => (total ? Math.round((used / total) * 100) : 0)
+
+function resourcesOf(q) {
+  const m = q.data
+  const pending = q.error ? 'Not available' : 'Checking…'
+  return [
+    {
+      icon: HardDrive,
+      label: 'Storage',
+      value: m?.disk ? share(m.disk.usedBytes, m.disk.totalBytes) : 0,
+      text: m?.disk ? `${fmtBytes(m.disk.usedBytes)} of ${fmtBytes(m.disk.totalBytes)}` : pending,
+    },
+    { icon: Cpu, label: 'CPU', value: m ? Math.round(m.cpu.percent) : 0, text: m ? `${m.cpu.percent}% load · ${m.cpu.cores} cores` : pending },
+    {
+      icon: Database,
+      label: 'Memory',
+      value: m ? share(m.memory.usedBytes, m.memory.totalBytes) : 0,
+      text: m ? `${fmtBytes(m.memory.usedBytes)} of ${fmtBytes(m.memory.totalBytes)}` : pending,
+    },
+  ]
+}
+
+const fileStorage = (q) => ({
+  name: 'File storage',
+  status: q.data ? (q.data.uploads.writable ? 'Operational' : 'Failed') : q.error ? 'Failed' : 'Pending',
+  detail: q.data ? (q.data.uploads.writable ? 'Upload folder writable' : 'Upload folder is not writable') : q.error ? errorText(q.error) : 'Checking…',
+})
 
 function Meter({ icon: Icon, label, value, text }) {
   return (
@@ -60,6 +79,7 @@ function ServiceList({ items }) {
 }
 
 export function ActivityList({ items }) {
+  if (!items.length) return <p className="muted small">No activity yet.</p>
   return (
     <ul className="plain-list">
       {items.map((a) => (
@@ -98,48 +118,52 @@ const liveServices = (h) => [
     detail: h?.db === 'up' ? `Connected · ping ${h.dbLatencyMs} ms` : h?.ok ? 'Unreachable' : h?.error || 'Checking…',
   },
 ]
+// ai.speechToText / ai.extraction from /health: 'ready' | 'missing-key' | 'offline' (automated tests)
+const aiStep = (h, step, ready, key) => {
+  const s = h?.ai?.[step]
+  if (!h?.ok) return { status: h ? 'Failed' : 'Pending', detail: h?.error || 'Checking…' }
+  if (s === 'missing-key') return { status: 'Not configured', detail: `Add ${key} to the backend .env` }
+  return { status: 'Operational', detail: s === 'offline' ? 'Offline test mode' : ready }
+}
+const STT_NAMES = { groq: 'Groq Whisper large-v3', openai: 'OpenAI Whisper' }
+const LLM_NAMES = { groq: 'Groq gpt-oss-120b', claude: 'Claude structured outputs', keywords: 'Built-in keyword rules (no API key)' }
 const aiServices = (h) => [
-  { name: 'Speech-to-Text (Whisper)', status: h?.ok ? 'Operational' : 'Failed', detail: h?.aiMode === 'live' ? 'OpenAI Whisper' : 'Demo mode (offline transcript)' },
-  { name: 'Journal draft generation', status: h?.ok ? 'Operational' : 'Failed', detail: h?.aiMode === 'live' ? 'Claude structured outputs' : 'Demo mode (rule-based extractor)' },
+  { name: 'Speech-to-Text (Whisper)', ...aiStep(h, 'speechToText', STT_NAMES[h?.ai?.speechToTextProvider] || 'Whisper', 'GROQ_API_KEY') },
+  { name: 'Journal draft generation', ...aiStep(h, 'extraction', LLM_NAMES[h?.ai?.extractionProvider] || 'AI', 'GROQ_API_KEY') },
 ]
+const aiConfigured = (h) => h?.ai && h.ai.speechToText !== 'missing-key' && h.ai.extraction !== 'missing-key'
+const aiLabel = (h) =>
+  !h?.ai
+    ? ''
+    : h.ai.mode === 'mock'
+      ? 'Offline test mode'
+      : aiConfigured(h)
+        ? `Live (${STT_NAMES[h.ai.speechToTextProvider]} + ${LLM_NAMES[h.ai.extractionProvider]})`
+        : 'Speech-to-text key not configured'
 
 export function AdminDashboard() {
-  const { db, user } = useStore()
+  const { user } = useStore()
   const ad = useApi(() => api.reports.adminDashboard(), [])
+  const today = todayISO()
+  const mine = useApi(() => api.auditLogs.list({ userId: user.apiId, limit: 5 }), [user.apiId])
+  const recent = useApi(() => api.auditLogs.list({ limit: 4 }), [])
+  const todayAll = useApi(() => api.auditLogs.list({ from: today, to: today, limit: 1 }), [today])
+  const todayFailed = useApi(() => api.auditLogs.list({ from: today, to: today, status: 'FAILED', limit: 1 }), [today])
   const schools = useApi(() => api.schools.list(), [])
   const health = useHealth()
-  const today = db.audit.filter((a) => new Date(a.at).toISOString().slice(0, 10) === todayISO())
+  const metrics = useMetrics()
 
   return (
     <>
       <PageHeader title="Dashboard" subtitle={`Platform status · ${fmtDate(todayISO())}`} />
       <Loadable q={ad} skeleton={<SkeletonCards />}>
         {(d) => (
-          <>
-            <div className="grid stats">
-              <StatCard icon={School} label="Total Schools" value={d.totals.schools} tint="sky" />
-              <StatCard icon={CheckCircle2} label="Active Schools" value={d.totals.activeSchools} tint="mint" />
-              <StatCard icon={Lock} label="Inactive / Locked Schools" value={d.totals.schools - d.totals.activeSchools} tint="peach" />
-              <StatCard
-                icon={UserCog}
-                label="Principal Accounts"
-                value={d.totals.users.PRINCIPAL.total}
-                hint={`${d.totals.users.TEACHER.total} teachers · ${d.totals.users.PARENT.total} parents`}
-                tint="lav"
-              />
-            </div>
-            <section className="card">
-              <div className="card-head">
-                <h2>Journal entries in the last 7 days</h2>
-                <span className="muted small">per school</span>
-              </div>
-              <CategoryBarChart
-                data={d.last7Days.map((s) => ({ label: s.schoolName, value: s.journalEntries }))}
-                valueName="Entries"
-                height={Math.max(120, d.last7Days.length * 48)}
-              />
-            </section>
-          </>
+          <div className="grid stats">
+            <StatCard icon={School} label="Total Schools" value={d.totals.schools} tint="sky" />
+            <StatCard icon={CheckCircle2} label="Active Schools" value={d.totals.activeSchools} tint="mint" />
+            <StatCard icon={Lock} label="Inactive / Locked Schools" value={d.totals.schools - d.totals.activeSchools} tint="peach" />
+            <StatCard icon={UserCog} label="Principal Accounts" value={d.totals.users.PRINCIPAL.total} tint="lav" />
+          </div>
         )}
       </Loadable>
 
@@ -149,16 +173,35 @@ export function AdminDashboard() {
             <h2>School Overview</h2>
             <Link to="/admin/schools">Manage schools</Link>
           </div>
-          <ul className="plain-list">
+          {schools.data?.length === 0 && <p className="muted small">No schools yet.</p>}
+          <ul className="plain-list school-overview">
             {(schools.data || []).map((s) => (
-              <li key={s.id} className="row-between">
-                <span>
-                  <strong>{s.name}</strong>
-                  <span className="muted block small">
-                    {s.principals[0]?.fullName || 'No principal'} · {s.classCount} classes · {s.teacherCount} teachers · {s.parentCount} parents
+              <li key={s.id}>
+                <div className="row-between school-overview-head">
+                  <span>
+                    <strong className="school-overview-name">{s.name}</strong>
+                    {s.address && <span className="muted block">{s.address}</span>}
                   </span>
-                </span>
-                <StatusBadge status={statusOf(s)} />
+                  <StatusBadge status={statusOf(s)} />
+                </div>
+                <dl className="details compact">
+                  <div>
+                    <dt>Principal</dt>
+                    <dd>{s.principals[0]?.fullName || '—'}</dd>
+                  </div>
+                  <div>
+                    <dt>Teachers</dt>
+                    <dd>{s.teacherCount}</dd>
+                  </div>
+                  <div>
+                    <dt>Classes</dt>
+                    <dd>{s.classCount}</dd>
+                  </div>
+                  <div>
+                    <dt>Students</dt>
+                    <dd>{s.studentCount}</dd>
+                  </div>
+                </dl>
               </li>
             ))}
           </ul>
@@ -180,11 +223,11 @@ export function AdminDashboard() {
               <Sparkles size={16} /> AI service
             </span>
             <span className="cell-user">
-              <span className="muted small">{health.data?.aiMode === 'live' ? 'Live (Whisper + Claude)' : 'Demo mode'}</span>
-              <StatusBadge status={health.data?.ok ? 'Operational' : 'Pending'} />
+              <span className="muted small">{aiLabel(health.data)}</span>
+              <StatusBadge status={!health.data?.ok ? 'Pending' : aiConfigured(health.data) ? 'Operational' : 'Not configured'} />
             </span>
           </div>
-          {RESOURCES.map((r) => (
+          {resourcesOf(metrics).map((r) => (
             <Meter key={r.label} {...r} />
           ))}
         </section>
@@ -193,7 +236,7 @@ export function AdminDashboard() {
           <div className="card-head">
             <h2>Recent Activities</h2>
           </div>
-          <ActivityList items={db.audit.filter((a) => a.role === 'System Admin' || a.user === user.name).slice(0, 5)} />
+          <ActivityList items={(mine.data?.items || []).map(toAuditRow)} />
         </section>
 
         <section className="card">
@@ -203,15 +246,15 @@ export function AdminDashboard() {
           </div>
           <div className="mini-stats">
             <div>
-              <div className="stat-value">{today.length}</div>
+              <div className="stat-value">{todayAll.data?.total ?? '…'}</div>
               <div className="muted">Events today</div>
             </div>
             <div>
-              <div className="stat-value">{today.filter((a) => a.status === 'Failed').length}</div>
+              <div className="stat-value">{todayFailed.data?.total ?? '…'}</div>
               <div className="muted">Failed today</div>
             </div>
           </div>
-          <ActivityList items={db.audit.slice(0, 4)} />
+          <ActivityList items={(recent.data?.items || []).map(toAuditRow)} />
         </section>
       </div>
     </>
@@ -242,7 +285,7 @@ export function SchoolsPage() {
         { key: 'status', label: 'Status', render: (s) => <StatusBadge status={statusOf(s)} /> },
         { key: 'teachers', label: 'Teachers', sort: (s) => s.teacherCount, render: (s) => s.teacherCount },
         { key: 'classes', label: 'Classes', sort: (s) => s.classCount, render: (s) => s.classCount },
-        { key: 'parents', label: 'Parents', sort: (s) => s.parentCount, render: (s) => s.parentCount },
+        { key: 'students', label: 'Students', sort: (s) => s.studentCount, render: (s) => s.studentCount },
         { key: 'createdAt', label: 'Created Date', sort: (s) => s.createdAt, render: (s) => dateOf(s.createdAt) },
       ]}
       fields={(form, editing) => [
@@ -270,7 +313,7 @@ export function SchoolsPage() {
         ['Status', <StatusBadge status={statusOf(s)} />],
         ['Teachers', s.teacherCount],
         ['Classes', s.classCount],
-        ['Parents', s.parentCount],
+        ['Students', s.studentCount],
         ['Created Date', dateOf(s.createdAt)],
       ]}
       actions={(row) => statusActions({ row, name: row.name, noun: 'School', save: (status) => api.schools.update(row.id, { status }), done: schools.reload, toast })}
@@ -317,7 +360,7 @@ export function PrincipalsPage() {
       ]}
       fields={(form, editing) => [
         { name: 'fullName', label: 'Full Name', required: true },
-        { name: 'phone', label: 'Phone', type: 'tel', required: true, hint: editing ? undefined : `Used to sign in. Initial password: ${DEMO_PASSWORD}` },
+        { name: 'phone', label: 'Phone', type: 'tel', required: true, hint: editing ? undefined : `Used to sign in. Initial password: ${INITIAL_PASSWORD}` },
         { name: 'email', label: 'Email', type: 'email' },
         { name: 'schoolId', label: 'School', type: 'select', required: true, options: (schools.data || []).map((s) => ({ value: s.id, label: s.name })) },
       ]}
@@ -357,11 +400,10 @@ const SETTINGS_FIELDS = [
 ]
 
 export function SettingsPage() {
-  const { db, mutate, log, resetDemo } = useStore()
+  const { db, mutate } = useStore()
   const toast = useToast()
   const [form, setForm] = useState(db.settings)
   const [errors, setErrors] = useState({})
-  const [confirm, setConfirm] = useState(false)
 
   const save = (e) => {
     e.preventDefault()
@@ -369,7 +411,6 @@ export function SettingsPage() {
     setErrors(errs)
     if (Object.keys(errs).length) return
     mutate(() => ({ settings: form }))
-    log('Update', 'System Settings', 'Global settings updated')
     toast('Settings saved successfully.')
   }
 
@@ -392,41 +433,17 @@ export function SettingsPage() {
           </button>
         </div>
       </form>
-
-      <div className="card form-card">
-        <h2>Demonstration data</h2>
-        <p className="muted">
-          Restore the local sample data (messages, notifications, announcements, audit log) kept in this browser. Data stored in the backend is reset with <code>npm run seed</code>{' '}
-          in the BE folder.
-        </p>
-        <div>
-          <button className="btn" onClick={() => setConfirm(true)}>
-            <RotateCcw size={16} /> Reset demo data
-          </button>
-        </div>
-      </div>
-      <ConfirmDialog
-        open={confirm}
-        title="Reset demo data?"
-        body="Everything created or edited in this browser will be replaced with the original sample data."
-        confirmLabel="Reset"
-        danger
-        onClose={() => setConfirm(false)}
-        onConfirm={() => {
-          resetDemo()
-          setConfirm(false)
-          toast('Demo data has been reset.')
-        }}
-      />
     </div>
   )
 }
 
 export function MonitoringPage() {
   const health = useHealth()
+  const metrics = useMetrics()
   const [checked, setChecked] = useState(Date.now())
   const refresh = () => {
     health.reload()
+    metrics.reload()
     setChecked(Date.now())
   }
   const ok = health.data?.ok && health.data.db === 'up'
@@ -434,10 +451,10 @@ export function MonitoringPage() {
     <>
       <PageHeader
         title="System Monitoring"
-        subtitle={`Last checked ${fmtDateTime(checked)} · API and database are checked live; resource figures are sample values`}
+        subtitle={`Last checked ${fmtDateTime(checked)} · all figures are measured on the server`}
         actions={
-          <button className="btn" onClick={refresh} disabled={health.loading}>
-            <RefreshCw size={16} className={health.loading ? 'spin' : ''} /> {health.loading ? 'Checking…' : 'Refresh'}
+          <button className="btn" onClick={refresh} disabled={health.loading || metrics.loading}>
+            <RefreshCw size={16} className={health.loading || metrics.loading ? 'spin' : ''} /> {health.loading || metrics.loading ? 'Checking…' : 'Refresh'}
           </button>
         }
       />
@@ -447,12 +464,12 @@ export function MonitoringPage() {
             <h2>System Health</h2>
             <StatusBadge status={health.data ? (ok ? 'Healthy' : 'Failed') : 'Pending'} />
           </div>
-          <ServiceList items={[...liveServices(health.data), ...SERVICES]} />
+          <ServiceList items={[...liveServices(health.data), fileStorage(metrics)]} />
         </section>
         <section className="card">
           <div className="card-head">
             <h2>AI Service Status</h2>
-            <StatusBadge status={ok ? 'Operational' : 'Pending'} />
+            <StatusBadge status={!ok ? 'Pending' : aiConfigured(health.data) ? 'Operational' : 'Not configured'} />
           </div>
           <ServiceList items={aiServices(health.data)} />
         </section>
@@ -460,7 +477,7 @@ export function MonitoringPage() {
           <div className="card-head">
             <h2>Resource Utilization</h2>
           </div>
-          {RESOURCES.map((r) => (
+          {resourcesOf(metrics).map((r) => (
             <Meter key={r.label} {...r} />
           ))}
         </section>
@@ -470,9 +487,9 @@ export function MonitoringPage() {
           </div>
           <ul className="plain-list">
             {[
-              ['Journal photos', '24.1 GB'],
+              ['Journal photos', metrics.data ? `${metrics.data.uploads.photoFiles} files · ${fmtBytes(metrics.data.uploads.photoBytes)}` : '—'],
+              ['Database (records and profile photos)', metrics.data ? fmtBytes(metrics.data.database.sizeBytes) : '—'],
               ['Voice recordings', 'Not stored (sent to speech-to-text only)'],
-              ['Profile photos', '1.3 GB'],
               ['Documents and exports', 'Generated on demand'],
             ].map(([k, v]) => (
               <li key={k} className="row-between">

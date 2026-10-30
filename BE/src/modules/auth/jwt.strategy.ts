@@ -27,11 +27,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  /** Re-reads the account so a locked/deactivated user is cut off immediately, not when the token expires. */
+  /**
+   * Re-reads the account (and its school) so a locked / deactivated user — or every user of a locked / deactivated
+   * school — is cut off immediately, not when the token expires.
+   */
   async validate(payload: JwtPayload): Promise<AuthUser> {
-    const user = await this.users.findOne({ where: { id: payload.sub } });
+    const user = await this.users.findOne({ where: { id: payload.sub }, relations: { school: true } });
     if (!user || user.status !== RecordStatus.ACTIVE)
       throw new UnauthorizedException('Account is not active');
+    if (user.school && user.school.status !== RecordStatus.ACTIVE)
+      throw new UnauthorizedException('Your school is not active on the platform');
     return { id: user.id, role: user.role, schoolId: user.schoolId, fullName: user.fullName };
   }
 }

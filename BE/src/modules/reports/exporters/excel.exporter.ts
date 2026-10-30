@@ -33,7 +33,8 @@ export async function toExcel(report: ReportTable): Promise<Buffer> {
     const xr = ws.getRow(5 + r);
     report.columns.forEach((c, i) => {
       const cell = xr.getCell(i + 1);
-      const v = row[c.key];
+      const raw = row[c.key];
+      const v = c.labels && typeof raw === 'string' ? (c.labels[raw] ?? raw) : raw;
       cell.value = c.format === 'percent' && typeof v === 'number' ? v / 100 : v;
       if (c.format === 'percent') cell.numFmt = '0.0%';
       if (c.format === 'number') cell.alignment = { horizontal: 'right' };

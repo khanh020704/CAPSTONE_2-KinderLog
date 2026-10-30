@@ -1,16 +1,16 @@
 import { useState } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { ArrowLeft, GraduationCap, MailCheck, ShieldCheck, UserCog, Users } from 'lucide-react'
-import { DEMO_PASSWORD, ROLES, useStore } from '../store/store'
+import { ROLES, useStore } from '../store/store'
 import { isPhone } from '../lib/utils'
 import { Field, Logo } from '../components/ui'
 import { FormAlert, PasswordInput } from './shared'
 
 const ROLE_OPTIONS = [
-  { key: 'admin', icon: ShieldCheck, demo: '0901000001' },
-  { key: 'principal', icon: UserCog, demo: '0902000001' },
-  { key: 'teacher', icon: GraduationCap, demo: '0903000001' },
-  { key: 'parent', icon: Users, demo: '0904000001' },
+  { key: 'admin', icon: ShieldCheck },
+  { key: 'principal', icon: UserCog },
+  { key: 'teacher', icon: GraduationCap },
+  { key: 'parent', icon: Users },
 ]
 
 export function SchoolIllustration() {
@@ -124,7 +124,6 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false)
 
   if (user && !busy) return <Navigate to={ROLES[user.role].home} replace />
-  const opt = ROLE_OPTIONS.find((r) => r.key === role)
 
   const submit = (e) => {
     e.preventDefault()
@@ -148,7 +147,9 @@ export function LoginPage() {
       <div className="auth-mobile-logo">
         <Logo size={30} />
       </div>
-      <h1>Sign in as {ROLES[role].label}</h1>
+      {/* Keyed by role: a page translated by the browser (Google Translate) replaces this text with its own, so it is
+          rebuilt for each role instead of updated in place, or the old role's name would stay on screen. */}
+      <h1 key={role}>Sign in as {ROLES[role].label}</h1>
       <p className="muted">Choose your role, then enter the account provided by your school.</p>
 
       <div className="role-picker" role="radiogroup" aria-label="Role">
@@ -189,26 +190,6 @@ export function LoginPage() {
         </button>
       </form>
 
-      <div className="demo-hint">
-        <div>
-          <strong>Demo account</strong>
-          <div className="muted">
-            {opt.demo} · password {DEMO_PASSWORD}
-          </div>
-        </div>
-        <button
-          type="button"
-          className="btn btn-sm"
-          onClick={() => {
-            setPhone(opt.demo)
-            setPassword(DEMO_PASSWORD)
-            setErrors({})
-            setError('')
-          }}
-        >
-          Fill in
-        </button>
-      </div>
       <p className="auth-foot muted">Accounts are created by your school. Please contact the school office if you do not have one.</p>
     </AuthLayout>
   )
@@ -231,8 +212,8 @@ export function ForgotPasswordPage() {
         </span>
         <h1>Forgot your password?</h1>
         <p className="muted">
-          Your school can reset it for you. Contact the school office (parents and teachers) or the system administrator (principals); they will set it back to the initial password{' '}
-          <strong>{DEMO_PASSWORD}</strong>.
+          Your school can reset it for you. Contact the school office (parents and teachers) or the system administrator (principals); they will set it back to the initial password
+          and tell you what it is.
         </p>
         <p className="muted">After signing in, change it in My Profile → Change Password.</p>
         <Link to="/login" className="btn btn-primary btn-block btn-lg">

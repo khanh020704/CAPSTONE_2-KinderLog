@@ -2,7 +2,7 @@ import { ForbiddenException, Global, Injectable, Module, NotFoundException } fro
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AuthUser } from '../../common/decorators';
-import { UserRole } from '../../common/enums';
+import { RecordStatus, UserRole } from '../../common/enums';
 import { ClassEntity } from '../classes/entities/class.entity';
 import { ParentStudentMap } from '../students/entities/parent-student-map.entity';
 import { Student } from '../students/entities/student.entity';
@@ -55,7 +55,7 @@ export class AccessService {
     if (!student) throw new NotFoundException('Student not found');
     const ok =
       user.role === UserRole.PARENT
-        ? await this.links.exist({ where: { parentId: user.id, studentId } })
+        ? await this.links.exist({ where: { parentId: user.id, studentId, status: RecordStatus.ACTIVE } })
         : await this.canSeeClass(user, student.class);
     if (!ok) throw new ForbiddenException('You do not have access to this student');
     return student;
@@ -68,7 +68,10 @@ export class AccessService {
       return rows.map((r) => r.id);
     }
     if (user.role === UserRole.PARENT) {
-      const rows = await this.links.find({ where: { parentId: user.id }, relations: { student: true } });
+      const rows = await this.links.find({
+        where: { parentId: user.id, status: RecordStatus.ACTIVE },
+        relations: { student: true },
+      });
       return [...new Set(rows.map((r) => r.student.classId))];
     }
     return undefined;

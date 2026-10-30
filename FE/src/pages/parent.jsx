@@ -17,10 +17,11 @@ import {
   Video,
   VideoOff,
 } from 'lucide-react'
-import { unreadMessages, unreadNotifications, useStore } from '../store/store'
+import { useStore } from '../store/store'
 import { addDays, dayLabel, fmtDate, fmtLongDate, greeting, toISO, todayISO } from '../lib/utils'
 import { api } from '../lib/api'
 import { useApi } from '../lib/useApi'
+import { toAnnouncement } from '../lib/mappers'
 import { RELATIONSHIP, label } from '../lib/labels'
 import { useLogout } from '../components/Shell'
 import { CameraBadge, CameraPlayer, CameraPreview, CameraStatusText, useNow } from '../components/Camera'
@@ -71,29 +72,25 @@ function NoChild() {
   )
 }
 
-const visibleAnnouncements = (db) => {
-  const today = todayISO()
-  return db.announcements
-    .filter((a) => a.status === 'Published' && a.audience.includes('Parents') && a.publishDate <= today && (!a.expiryDate || a.expiryDate >= today))
-    .sort((a, b) => b.publishDate.localeCompare(a.publishDate) || b.createdAt - a.createdAt)
-}
+// Published, unexpired notices meant for parents, newest first: the backend filters them for the signed-in parent.
+const useAnnouncements = (limit) => useApi(() => api.announcements.list({ limit }), [limit])
 
-const attendanceText = (day) => {
-  if (!day) return 'Not recorded yet'
-  if (day.journal.attendance === 'ABSENT') return `Absent${day.journal.absenceReason ? ` — ${day.journal.absenceReason}` : ''}`
+const attendanceText = (a) => {
+  if (!a?.attendance) return 'Not recorded yet'
+  if (a.attendance === 'ABSENT') return `Absent${a.absenceReason ? ` — ${a.absenceReason}` : ''}`
   return 'Present'
 }
 
 // Camera cards poll the backend once a minute so "Scheduled" turns into "Live" on time.
 function useWatch(childId) {
   const tick = useNow(60000).getMinutes()
-  return useApi(() => (childId ? api.cameras.watch({ studentId: childId }) : Promise.resolve(null)), [childId, tick])
+  return useApi(() => (childId ? api.cameras.watch({ studentId: childId }) : Promise.resolve(undefined)), [childId, tick])
 }
 
 // ---------- Home ----------
 
 function HomeCamera({ child, allowed }) {
-  const q = useWatch(child.id)
+  const q = useWatch(allowed ? child.id : null)
   if (!allowed)
     return (
       <section className="card">
@@ -130,11 +127,14 @@ function HomeCamera({ child, allowed }) {
 }
 
 export function ParentHome() {
-  const { db, user } = useStore()
+  const { user, counts } = useStore()
+  const latestAnnouncement = useAnnouncements(1)
   const { kids, child, pick } = useChild()
   const today = todayISO()
-  const journals = useApi(() => (child ? api.journals.timeline(child.id, addDays(today, -14), today) : Promise.resolve(null)), [child?.id])
-  const detail = useApi(() => (child ? api.students.get(child.id) : Promise.resolve(null)), [child?.id])
+  const journals = useApi(() => (child ? api.journals.timeline(child.id, addDays(today, -14), today) : Promise.resolve(undefined)), [child?.id])
+  const detail = useApi(() => (child ? api.students.get(child.id) : Promise.resolve(undefined)), [child?.id])
+  // Attendance is shown as soon as the teacher records it, even before today's journal is shared.
+  const att = useApi(() => (child ? api.journals.attendance(child.id, today) : Promise.resolve(undefined)), [child?.id])
 
   if (!child)
     return (
@@ -148,12 +148,11 @@ export function ParentHome() {
   const todayDay = days.find((d) => d.date === today)
   const latest = days[0]
   const teacher = detail.data?.class?.homeroomTeacher?.fullName
-  const announcement = visibleAnnouncements(db)[0]
-  const messages = unreadMessages(db, user)
-  const notifications = unreadNotifications(db, user)
+  const announcement = latestAnnouncement.data?.items.map(toAnnouncement)[0]
+  const { messages, notifications } = counts
   const summary = todayDay ? todayDay.events.filter((e) => e.key !== 'attendance') : []
-  const SUMMARY_KEY = { learning: 'learning', meal: 'meal', sleep: 'sleep', health: 'health', emotion: 'emotion', note: 'note' }
-  const SUMMARY_TITLE = { learning: 'Learning', meal: 'Meal', sleep: 'Sleep', health: 'Health', emotion: 'Emotion', note: `About ${child.name}` }
+  const SUMMARY_KEY = { learning: 'learning', meal: 'meal', sleep: 'sleep', health: 'health', emotion: 'emotion', note: 'note', classNote: 'note' }
+  const SUMMARY_TITLE = { learning: 'Learning', meal: 'Meal', sleep: 'Sleep', health: 'Health', emotion: 'Emotion', note: `About ${child.name}`, classNote: 'For the whole class' }
 
   return (
     <>
@@ -166,7 +165,7 @@ export function ParentHome() {
           <h2>{child.name}</h2>
           <span>{child.className}</span>
           <span className="muted">Teacher: {detail.initial ? '…' : teacher || 'Not assigned'}</span>
-          <StatusBadge status={todayDay ? (todayDay.journal.attendance === 'ABSENT' ? 'Absent today' : 'Present today') : 'Not recorded'} />
+          <StatusBadge status={att.data?.attendance === 'ABSENT' ? 'Absent today' : att.data?.attendance === 'PRESENT' ? 'Present today' : 'Not recorded'} />
         </div>
       </section>
 
@@ -222,7 +221,7 @@ export function ParentHome() {
                 </span>
                 <div>
                   <strong>Attendance</strong>
-                  <span className="block">{attendanceText(todayDay)}</span>
+                  <span className="block">{attendanceText(att.data)}</span>
                 </div>
               </div>
               {summary.map((ev) => {
@@ -240,7 +239,7 @@ export function ParentHome() {
                 )
               })}
             </div>
-            {!todayDay && <EmptyState icon={BookOpen} title="Today's journal has not been shared yet." text="The teacher usually shares it in the afternoon." soft />}
+            {!todayDay && <EmptyState icon={BookOpen} title="Today's journal has not been created yet." text="The teacher usually shares it in the afternoon." soft />}
           </section>
         )}
       </Loadable>
@@ -362,8 +361,8 @@ export function ParentJournalPage() {
   const date = params.get('date') || today
   const [month, setMonth] = useState(date.slice(0, 7))
   const end = monthEnd(month) < today ? monthEnd(month) : today
-  const q = useApi(() => (child ? api.journals.timeline(child.id, `${month}-01`, end) : Promise.resolve(null)), [child?.id, month])
-  const dayQ = useApi(() => (child && date.slice(0, 7) !== month ? api.journals.timeline(child.id, date, date) : Promise.resolve(null)), [child?.id, date, month])
+  const q = useApi(() => (child ? api.journals.timeline(child.id, `${month}-01`, end) : Promise.resolve(undefined)), [child?.id, month])
+  const dayQ = useApi(() => (child && date.slice(0, 7) !== month ? api.journals.timeline(child.id, date, date) : Promise.resolve(undefined)), [child?.id, date, month])
   if (!child) return <NoChild />
 
   const days = q.data?.days || []
@@ -414,7 +413,7 @@ export function ParentJournalPage() {
                 <EmptyState
                   icon={BookOpen}
                   title={date === today ? "Today's journal has not been shared yet." : 'There is no journal for this day.'}
-                  text={date === today ? 'It appears here as soon as the teacher approves it.' : 'Choose a day marked with a dot.'}
+                  text={date === today ? 'It appears here as soon as the school publishes it.' : 'Choose a day marked with a dot.'}
                   soft
                 />
               )
@@ -431,10 +430,10 @@ export function ParentJournalPage() {
 export function ParentCameraPage() {
   const { user } = useStore()
   const { kids, child, pick } = useChild()
-  const q = useWatch(child?.id)
+  const allowed = user.cameraAccess !== false
+  const q = useWatch(allowed ? child?.id : null)
   if (!child) return <NoChild />
 
-  const allowed = user.cameraAccess !== false
   const cams = q.data?.cameras || []
   const live = cams.find((c) => c.state === 'LIVE' && c.streamUrl)
   const first = live || cams[0]
@@ -526,10 +525,10 @@ export function ParentCameraPage() {
 // ---------- More ----------
 
 export function ParentMorePage() {
-  const { db, user } = useStore()
+  const { user, counts } = useStore()
   const { child } = useChild()
   const [askLogout, logoutDialog] = useLogout()
-  const unread = unreadNotifications(db, user)
+  const unread = counts.notifications
   const links = [
     { to: '/parent/notifications', icon: Bell, label: 'Notifications', count: unread },
     { to: '/parent/announcements', icon: Megaphone, label: 'School Announcements' },
@@ -572,11 +571,11 @@ export function ParentMorePage() {
   )
 }
 
-// ---------- School announcements (local demo data: the backend has no announcements module) ----------
+// ---------- School announcements ----------
 
 export function ParentAnnouncementsPage() {
-  const { db } = useStore()
-  const list = visibleAnnouncements(db)
+  const q = useAnnouncements(50)
+  const list = (q.data?.items || []).map(toAnnouncement)
   return (
     <div className="narrow">
       <PageHeader title="School Announcements" subtitle="Notices from the school" />

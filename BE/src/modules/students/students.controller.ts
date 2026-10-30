@@ -1,8 +1,22 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+  UploadedFile,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { AuthUser, CurrentUser, Roles } from '../../common/decorators';
 import { UserRole } from '../../common/enums';
 import { CreateStudentDto, LinkParentDto, ListStudentsQueryDto, UpdateStudentDto } from './dto/student.dto';
+import { PHOTO_PUBLIC_PATH, photoUpload } from '../daily-journals/upload.config';
 import { StudentsService } from './students.service';
 
 @ApiTags('Students')
@@ -41,6 +55,19 @@ export class StudentsController {
       return this.students.update(user, id, { allergies, medicalNote });
     }
     return this.students.update(user, id, dto);
+  }
+
+  /** The child's profile photo (multipart, one image in the "avatar" field); replaces the previous one. */
+  @Roles(UserRole.PRINCIPAL)
+  @Post(':id/avatar')
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('avatar', photoUpload()))
+  setAvatar(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.students.setAvatar(user, id, file, PHOTO_PUBLIC_PATH);
   }
 
   @Roles(UserRole.PRINCIPAL)
