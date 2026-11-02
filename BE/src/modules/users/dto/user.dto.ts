@@ -5,13 +5,13 @@ import {
   IsEnum,
   IsOptional,
   IsString,
-  IsUUID,
   Length,
   Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
 import { RecordStatus, UserRole } from '../../../common/enums';
+import { IsGuid } from '../../../common/validators/guid';
 
 export class CreateUserDto {
   @IsString()
@@ -30,7 +30,7 @@ export class CreateUserDto {
 
   /** Required when a SYSTEM_ADMIN creates a principal; principals always create users in their own school. */
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   schoolId?: string;
 
   @IsOptional()
@@ -73,7 +73,7 @@ export class ListUsersQueryDto {
   status?: RecordStatus;
 
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   schoolId?: string;
 
   /** Matches name, phone or email */

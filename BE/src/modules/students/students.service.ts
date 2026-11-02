@@ -1,14 +1,12 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { promises as fs } from 'fs';
-import { join } from 'path';
 import { Repository } from 'typeorm';
 import { AuthUser } from '../../common/decorators';
 import { RecordStatus, UserRole } from '../../common/enums';
 import { foldSearch, likeFolded } from '../../common/utils/sql.util';
 import { AccessService } from '../access/access.service';
 import { ClassJournalNote } from '../daily-journals/entities/class-journal-note.entity';
-import { uploadRoot } from '../daily-journals/upload.config';
+import { MediaStorageService } from '../storage/media-storage.service';
 import { User } from '../users/entities/user.entity';
 import { CreateStudentDto, LinkParentDto, ListStudentsQueryDto, UpdateStudentDto } from './dto/student.dto';
 import { ParentStudentMap } from './entities/parent-student-map.entity';
@@ -21,6 +19,7 @@ export class StudentsService {
     @InjectRepository(ParentStudentMap) private readonly links: Repository<ParentStudentMap>,
     @InjectRepository(User) private readonly users: Repository<User>,
     private readonly access: AccessService,
+    private readonly media: MediaStorageService,
   ) {}
 
   async list(user: AuthUser, q: ListStudentsQueryDto) {
@@ -108,28 +107,14 @@ export class StudentsService {
   }
 
   /** Stores the uploaded photo as the child's avatar and removes the previous uploaded file. */
-  async setAvatar(
-    user: AuthUser,
-    studentId: string,
-    file: Express.Multer.File | undefined,
-    publicPath: string,
-  ) {
+  async setAvatar(user: AuthUser, studentId: string, file: Express.Multer.File | undefined) {
     if (!file) throw new BadRequestException('Attach an image in the "avatar" field');
-    const removeFile = (url: string | null) =>
-      url?.startsWith('/uploads/')
-        ? fs.unlink(join(uploadRoot(), url.replace(/^\/uploads\//, ''))).catch(() => undefined)
-        : Promise.resolve();
-    const url = `${publicPath}/${file.filename}`;
-    let student: Student;
-    try {
-      student = await this.access.assertStudent(user, studentId);
-    } catch (err) {
-      await removeFile(url); // nothing is kept for a request that was refused
-      throw err;
-    }
+    // Checked first: nothing is stored for a request that is refused.
+    const student = await this.access.assertStudent(user, studentId);
+    const url = await this.media.save(file, 'photos');
     const previous = student.avatarUrl;
     await this.students.update(studentId, { avatarUrl: url });
-    if (previous !== url) await removeFile(previous);
+    if (previous !== url) await this.media.remove('photos', previous);
     return this.findOne(user, studentId);
   }
 

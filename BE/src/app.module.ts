@@ -24,6 +24,7 @@ import { MessagesModule } from './modules/messages/messages.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { SchoolsModule } from './modules/schools/schools.module';
+import { mediaStorageKind, MediaStorageModule } from './modules/storage/media-storage.service';
 import { StudentsModule } from './modules/students/students.module';
 import { SystemModule } from './modules/system/system.module';
 import { UsersModule } from './modules/users/users.module';
@@ -47,6 +48,9 @@ class HealthController {
       dbEngine: DB_ENGINE[this.db.options.type] ?? this.db.options.type,
       aiMode: this.config.get<string>('ai.mode'),
       ai: aiReadiness(this.config),
+      mediaStorage: mediaStorageKind(),
+      // ImageKit files are handed out as signed URLs (recordings are private files)
+      signedMediaUrls: mediaStorageKind() === 'imagekit',
       time: new Date().toISOString(),
     };
     const started = Date.now();
@@ -67,6 +71,7 @@ class HealthController {
     TypeOrmModule.forRoot({ ...dataSourceOptions, autoLoadEntities: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
     CacheModule,
+    MediaStorageModule,
     AccessModule,
     AuthModule,
     SchoolsModule,

@@ -1,15 +1,4 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Module,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Module, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthUser, CurrentUser, Roles } from '../../common/decorators';
@@ -22,6 +11,7 @@ import {
   UpdateAcademicYearDto,
 } from './dto/academic-year.dto';
 import { AcademicYear } from './entities/academic-year.entity';
+import { ParseGuidPipe } from '../../common/validators/guid';
 
 @ApiTags('Academic Years')
 @ApiBearerAuth()
@@ -42,7 +32,7 @@ class AcademicYearsController {
   }
 
   @Get(':id')
-  findOne(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  findOne(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.years.findOne(user, id);
   }
 
@@ -56,7 +46,7 @@ class AcademicYearsController {
   @Patch(':id')
   update(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ParseGuidPipe) id: string,
     @Body() dto: UpdateAcademicYearDto,
   ) {
     return this.years.update(user, id, dto);
@@ -64,7 +54,7 @@ class AcademicYearsController {
 
   @Roles(UserRole.PRINCIPAL, UserRole.SYSTEM_ADMIN)
   @Delete(':id')
-  remove(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  remove(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.years.remove(user, id);
   }
 }

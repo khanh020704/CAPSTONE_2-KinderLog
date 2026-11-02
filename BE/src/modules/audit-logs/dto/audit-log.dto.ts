@@ -1,6 +1,7 @@
-import { IsDateString, IsEnum, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsDateString, IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
 import { PageQueryDto } from '../../../common/dto/pagination.dto';
 import { AuditAction, AuditStatus, UserRole } from '../../../common/enums';
+import { IsGuid } from '../../../common/validators/guid';
 
 export class ListAuditLogsQueryDto extends PageQueryDto {
   /** YYYY-MM-DD (inclusive, APP_TIMEZONE) */
@@ -13,7 +14,7 @@ export class ListAuditLogsQueryDto extends PageQueryDto {
   to?: string;
 
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   userId?: string;
 
   @IsOptional()
@@ -41,7 +42,7 @@ export class ListAuditLogsQueryDto extends PageQueryDto {
 
   /** SYSTEM_ADMIN only */
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   schoolId?: string;
 }
 

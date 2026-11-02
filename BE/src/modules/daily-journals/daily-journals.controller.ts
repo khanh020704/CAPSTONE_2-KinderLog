@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthUser, CurrentUser, Roles } from '../../common/decorators';
 import { UserRole } from '../../common/enums';
@@ -11,6 +11,7 @@ import {
   TimelineQueryDto,
   UpsertJournalDto,
 } from './dto/journal.dto';
+import { ParseGuidPipe } from '../../common/validators/guid';
 
 const STAFF = [UserRole.PRINCIPAL, UserRole.TEACHER] as const;
 
@@ -34,7 +35,7 @@ export class DailyJournalsController {
   @Get('class/:classId')
   classDay(
     @CurrentUser() user: AuthUser,
-    @Param('classId', ParseUUIDPipe) classId: string,
+    @Param('classId', ParseGuidPipe) classId: string,
     @Query() q: ClassDayQueryDto,
   ) {
     return this.journals.classDay(user, classId, q.date);
@@ -54,7 +55,7 @@ export class DailyJournalsController {
 
   @Roles(UserRole.SYSTEM_ADMIN, ...STAFF)
   @Get(':id')
-  findOne(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  findOne(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.journals.findOne(user, id);
   }
 
@@ -72,7 +73,7 @@ export class DailyJournalsController {
   @Put('student/:studentId')
   upsertOne(
     @CurrentUser() user: AuthUser,
-    @Param('studentId', ParseUUIDPipe) studentId: string,
+    @Param('studentId', ParseGuidPipe) studentId: string,
     @Body() dto: UpsertJournalDto,
   ) {
     return this.journals.upsertOne(user, studentId, dto);
@@ -80,7 +81,7 @@ export class DailyJournalsController {
 
   @Roles(...STAFF)
   @Delete(':id')
-  remove(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  remove(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.journals.remove(user, id);
   }
 }

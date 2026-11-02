@@ -15,7 +15,7 @@ import {
   UpdateCameraStreamDto,
   WatchQueryDto,
 } from './dto/camera-stream.dto';
-import { CameraStream } from './entities/camera-stream.entity';
+import { CameraStream, streamUrlOf } from './entities/camera-stream.entity';
 
 @Injectable()
 export class CameraStreamsService {
@@ -56,7 +56,7 @@ export class CameraStreamsService {
     if (visible) qb.andWhere(visible.length ? 'c.id IN (:...visible)' : '1=0', { visible });
     if (q.classId) qb.andWhere('cam.classId = :classId', { classId: q.classId });
     const rows = await qb.getMany();
-    return rows.map((cam) => ({ ...cam, ...availability(cam, this.tz) }));
+    return rows.map((cam) => ({ ...cam, streamUrl: streamUrlOf(cam), ...availability(cam, this.tz) }));
   }
 
   /**
@@ -83,7 +83,7 @@ export class CameraStreamsService {
           name: cam.name,
           state: a.state,
           window: a.window,
-          streamUrl: a.state === 'LIVE' || staff ? cam.streamUrl : null,
+          streamUrl: a.state === 'LIVE' || staff ? streamUrlOf(cam) : null,
         };
       }),
     };
@@ -101,7 +101,7 @@ export class CameraStreamsService {
         window: a.window,
       });
     }
-    return { id: cam.id, name: cam.name, streamUrl: cam.streamUrl, ...a };
+    return { id: cam.id, name: cam.name, streamUrl: streamUrlOf(cam), ...a };
   }
 
   async findOne(user: AuthUser, id: string) {
@@ -114,7 +114,8 @@ export class CameraStreamsService {
   async create(user: AuthUser, dto: CreateCameraStreamDto) {
     await this.access.assertClass(user, dto.classId);
     this.assertWindow(dto.allowedStartTime, dto.allowedEndTime);
-    return this.cameras.save(this.cameras.create(dto));
+    const cam = await this.cameras.save(this.cameras.create(dto));
+    return { ...cam, streamUrl: streamUrlOf(cam) };
   }
 
   async update(user: AuthUser, id: string, dto: UpdateCameraStreamDto) {
@@ -122,7 +123,8 @@ export class CameraStreamsService {
     if (dto.classId) await this.access.assertClass(user, dto.classId);
     this.assertWindow(dto.allowedStartTime ?? cam.allowedStartTime, dto.allowedEndTime ?? cam.allowedEndTime);
     await this.cameras.update(id, dto);
-    return this.findOne(user, id);
+    const updated = await this.findOne(user, id);
+    return { ...updated, streamUrl: streamUrlOf(updated) };
   }
 
   async remove(user: AuthUser, id: string) {

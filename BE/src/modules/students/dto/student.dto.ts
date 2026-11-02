@@ -6,14 +6,14 @@ import {
   IsIn,
   IsOptional,
   IsString,
-  IsUUID,
   Length,
   MaxLength,
 } from 'class-validator';
 import { Gender, RecordStatus, Relationship } from '../../../common/enums';
+import { IsGuid } from '../../../common/validators/guid';
 
 export class CreateStudentDto {
-  @IsUUID()
+  @IsGuid()
   classId: string;
 
   @IsString()
@@ -47,7 +47,7 @@ export class UpdateStudentDto extends PartialType(CreateStudentDto) {
 
 export class ListStudentsQueryDto {
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   classId?: string;
 
   @IsOptional()
@@ -61,7 +61,7 @@ export class ListStudentsQueryDto {
 }
 
 export class LinkParentDto {
-  @IsUUID()
+  @IsGuid()
   parentId: string;
 
   @IsEnum(Relationship)

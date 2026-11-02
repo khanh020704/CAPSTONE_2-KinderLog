@@ -116,7 +116,7 @@ export class ClassJournalsService {
 
   // ------------------------------------------------------------------ responses
 
-  private listItem(j: ClassJournal) {
+  private listItem(j: ClassJournal, user: AuthUser) {
     return {
       id: j.id,
       classId: j.classId,
@@ -129,13 +129,15 @@ export class ClassJournalsService {
       // Published before, edited since: parents still see the published version.
       unpublishedChanges: j.revision > 0 && j.status !== ClassJournalStatus.PUBLISHED,
       editedAt: j.revision > 1 ? ms(j.publishedVersion?.publishedAt) : null,
+      // Teachers change today's journal only, the principal any day: the FE shows older ones read-only.
+      editable: this.journals.isEditable(user, j.journalDate),
     };
   }
 
   /** The teacher's full view, including every personal note, the transcript and the recordings. */
-  private full(j: ClassJournal) {
+  private full(j: ClassJournal, user: AuthUser) {
     return {
-      ...this.listItem(j),
+      ...this.listItem(j, user),
       sections: sectionsOf(j),
       personal: personalOf(j),
       photos: j.photos,
@@ -159,11 +161,11 @@ export class ClassJournalsService {
       where: { classId: q.classId, ...(q.date && { journalDate: q.date }), ...(status && { status }) },
       order: { journalDate: 'DESC' },
     });
-    return { items: rows.map((j) => this.listItem(j)) };
+    return { items: rows.map((j) => this.listItem(j, user)) };
   }
 
   async get(user: AuthUser, id: string) {
-    return this.full(await this.require(user, id, false));
+    return this.full(await this.require(user, id, false), user);
   }
 
   /** What a journal says now, for checking a further recording against it. */
@@ -198,7 +200,7 @@ export class ClassJournalsService {
     });
     this.setContent(j, this.readSections(dto.sections), personal);
     try {
-      return this.full(await this.repo.save(j));
+      return this.full(await this.repo.save(j), user);
     } catch (err) {
       if (/uq_class_journal_class_date|UNIQUE KEY/i.test(String((err as Error).message))) {
         throw new ConflictException('This class already has a journal for that day.');
@@ -231,7 +233,7 @@ export class ClassJournalsService {
         j.approvedAt = null;
       }
       await tx.getRepository(ClassJournalNote).delete({ journalId: j.id });
-      return this.full(await repo.save(j));
+      return this.full(await repo.save(j), user);
     });
   }
 
@@ -251,11 +253,11 @@ export class ClassJournalsService {
     }
     const hasContent = SECTION_KEYS.some((k) => j[k]?.trim()) || (j.personalNotes ?? []).length > 0;
     if (!hasContent) throw new ConflictException('Add content to at least one section before approving.');
-    if (j.status === ClassJournalStatus.APPROVED) return this.full(j);
+    if (j.status === ClassJournalStatus.APPROVED) return this.full(j, user);
     j.status = ClassJournalStatus.APPROVED;
     j.approvedAt = new Date();
     j.updatedById = user.id;
-    return this.full(await this.repo.save(j));
+    return this.full(await this.repo.save(j), user);
   }
 
   /**
@@ -298,7 +300,7 @@ export class ClassJournalsService {
     );
     if (!moved.affected) throw new ConflictException('This journal is already published.');
     await this.announce(j, previous);
-    return this.full(j);
+    return this.full(j, user);
   }
 
   /** Another recording: its text is added to the draft (corrected statements are replaced) and goes back to review. */
@@ -337,7 +339,7 @@ export class ClassJournalsService {
       j.approvedAt = null;
       j.updatedById = user.id;
       await tx.getRepository(ClassJournalNote).delete({ journalId: j.id });
-      return this.full(await repo.save(j));
+      return this.full(await repo.save(j), user);
     });
   }
 

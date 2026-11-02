@@ -1,10 +1,11 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthUser, CurrentUser, Roles } from '../../common/decorators';
 import { UserRole } from '../../common/enums';
 import { AccessService } from '../access/access.service';
 import { CreateSchoolDto, UpdateSchoolDto } from './dto/school.dto';
 import { SchoolsService } from './schools.service';
+import { ParseGuidPipe } from '../../common/validators/guid';
 
 @ApiTags('Schools')
 @ApiBearerAuth()
@@ -37,7 +38,7 @@ export class SchoolsController {
 
   @Roles(UserRole.SYSTEM_ADMIN)
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
+  findOne(@Param('id', ParseGuidPipe) id: string) {
     return this.schools.findOne(id);
   }
 
@@ -49,13 +50,13 @@ export class SchoolsController {
 
   @Roles(UserRole.SYSTEM_ADMIN)
   @Patch(':id')
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateSchoolDto) {
+  update(@Param('id', ParseGuidPipe) id: string, @Body() dto: UpdateSchoolDto) {
     return this.schools.update(id, dto);
   }
 
   @Roles(UserRole.SYSTEM_ADMIN)
   @Delete(':id')
-  remove(@Param('id', ParseUUIDPipe) id: string) {
+  remove(@Param('id', ParseGuidPipe) id: string) {
     return this.schools.remove(id);
   }
 }

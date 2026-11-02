@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthUser, CurrentUser, Roles } from '../../common/decorators';
 import { UserRole } from '../../common/enums';
@@ -9,6 +9,7 @@ import {
   UpdateCameraStreamDto,
   WatchQueryDto,
 } from './dto/camera-stream.dto';
+import { ParseGuidPipe } from '../../common/validators/guid';
 
 @ApiTags('Camera Streams')
 @ApiBearerAuth()
@@ -23,7 +24,7 @@ export class CameraStreamsController {
   }
 
   @Get(':id/watch')
-  watchOne(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  watchOne(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.cameras.watchOne(user, id);
   }
 
@@ -43,7 +44,7 @@ export class CameraStreamsController {
   @Patch(':id')
   update(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ParseGuidPipe) id: string,
     @Body() dto: UpdateCameraStreamDto,
   ) {
     return this.cameras.update(user, id, dto);
@@ -51,7 +52,7 @@ export class CameraStreamsController {
 
   @Roles(UserRole.PRINCIPAL)
   @Delete(':id')
-  remove(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  remove(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.cameras.remove(user, id);
   }
 }

@@ -522,6 +522,39 @@ describe('7. Parent — timeline & camera', () => {
           allowedEndTime: '09:00',
         })
         .expect(400));
+
+    it('a PeerJS camera: peer:// uses its own id as the code, peer://<code> a chosen one; bad codes are refused', async () => {
+      const base = {
+        classId: ids.class1,
+        allowedStartTime: '00:00',
+        allowedEndTime: '23:59',
+        allowedWeekdays: allDays,
+      };
+      const byId = await api('post', '/camera-streams', 'principal')
+        .send({ ...base, name: 'QA peer id', streamUrl: 'peer://' })
+        .expect(201);
+      const code = `peer://${byId.body.id.toLowerCase()}`;
+      expect(byId.body.streamUrl).toBe(code);
+      const named = await api('post', '/camera-streams', 'principal')
+        .send({ ...base, name: 'QA peer code', streamUrl: 'peer://cam-qa1' })
+        .expect(201);
+      camIds.push(byId.body.id, named.body.id);
+
+      const res = await api('get', `/camera-streams/watch?studentId=${ids.an}`, 'parent').expect(200);
+      const find = (name: string) => res.body.cameras.find((c: any) => c.name === name);
+      expect(find('QA peer id')).toMatchObject({ state: 'LIVE', streamUrl: code });
+      expect(find('QA peer code')).toMatchObject({ state: 'LIVE', streamUrl: 'peer://cam-qa1' });
+      const one = await api('get', `/camera-streams/${byId.body.id}/watch`, 'parent').expect(200);
+      expect(one.body.streamUrl).toBe(code);
+      const staff = await api('get', `/camera-streams?classId=${ids.class1}`, 'principal').expect(200);
+      expect(staff.body.find((c: any) => c.id === byId.body.id).streamUrl).toBe(code);
+
+      for (const streamUrl of ['peer://Cam 1', 'peer://-cam', 'ftp://x.test/a.m3u8']) {
+        await api('post', '/camera-streams', 'principal')
+          .send({ ...base, name: 'bad', streamUrl })
+          .expect(400);
+      }
+    });
   });
 });
 

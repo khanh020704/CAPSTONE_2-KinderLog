@@ -4,7 +4,6 @@ import {
   Controller,
   Get,
   Param,
-  ParseUUIDPipe,
   Post,
   Put,
   Query,
@@ -26,7 +25,9 @@ import {
   UpdateClassJournalDto,
   VoiceDraftDto,
 } from './dto/class-journal.dto';
-import { audioUpload, photoUpload, PHOTO_PUBLIC_PATH } from './upload.config';
+import { audioUpload, photoUpload } from './upload.config';
+import { ParseGuidPipe } from '../../common/validators/guid';
+import { MediaStorageService } from '../storage/media-storage.service';
 
 const STAFF = [UserRole.PRINCIPAL, UserRole.TEACHER] as const;
 
@@ -42,6 +43,7 @@ export class ClassJournalsController {
   constructor(
     private readonly journals: ClassJournalsService,
     private readonly ai: AiPipelineService,
+    private readonly media: MediaStorageService,
   ) {}
 
   /** A class's journals, newest first. status=review covers journals waiting for approval or publishing. */
@@ -52,13 +54,13 @@ export class ClassJournalsController {
   }
 
   /** Photos for a journal: stored and returned as addresses, which PUT /class-journals/:id then saves. */
-  @Roles(...STAFF)
+  @Roles(UserRole.SYSTEM_ADMIN, ...STAFF)
   @Post('photos')
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FilesInterceptor('photos', 10, photoUpload()))
-  photos(@UploadedFiles() files: Express.Multer.File[]) {
+  async photos(@UploadedFiles() files: Express.Multer.File[]) {
     if (!files?.length) throw new BadRequestException('Attach at least one image in the "photos" field');
-    return { urls: files.map((f) => `${PHOTO_PUBLIC_PATH}/${f.filename}`) };
+    return { urls: await this.media.saveAll(files, 'photos') };
   }
 
   /** Recording → text (Whisper knows the children's names; the browser's transcript is the fallback). */
@@ -83,7 +85,7 @@ export class ClassJournalsController {
 
   @Roles(UserRole.SYSTEM_ADMIN, ...STAFF)
   @Get(':id')
-  get(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  get(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.journals.get(user, id);
   }
 
@@ -97,7 +99,7 @@ export class ClassJournalsController {
   @Put(':id')
   update(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ParseGuidPipe) id: string,
     @Body() dto: UpdateClassJournalDto,
   ) {
     return this.journals.update(user, id, dto);
@@ -105,13 +107,13 @@ export class ClassJournalsController {
 
   @Roles(...STAFF)
   @Post(':id/approve')
-  approve(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  approve(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.journals.approve(user, id);
   }
 
   @Roles(...STAFF)
   @Post(':id/publish')
-  publish(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  publish(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.journals.publish(user, id);
   }
 
@@ -120,7 +122,7 @@ export class ClassJournalsController {
   @Post(':id/recordings')
   addRecording(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ParseGuidPipe) id: string,
     @Body() dto: AddRecordingDto,
   ) {
     return this.journals.addRecording(user, id, dto);

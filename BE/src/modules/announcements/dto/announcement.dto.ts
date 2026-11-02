@@ -4,13 +4,13 @@ import {
   IsEnum,
   IsOptional,
   IsString,
-  IsUUID,
   MaxLength,
   MinLength,
   ValidateIf,
 } from 'class-validator';
 import { PageQueryDto } from '../../../common/dto/pagination.dto';
 import { AnnouncementAudience, AnnouncementCategory, AnnouncementStatus } from '../../../common/enums';
+import { IsGuid } from '../../../common/validators/guid';
 
 export class CreateAnnouncementDto {
   @IsString()
@@ -48,7 +48,7 @@ export class CreateAnnouncementDto {
 
   /** SYSTEM_ADMIN only */
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   schoolId?: string;
 }
 
@@ -75,6 +75,6 @@ export class ListAnnouncementsQueryDto extends PageQueryDto {
 
   /** SYSTEM_ADMIN only */
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   schoolId?: string;
 }

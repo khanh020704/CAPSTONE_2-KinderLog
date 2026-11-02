@@ -1,8 +1,5 @@
-import { BadGatewayException, BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'crypto';
-import { promises as fs } from 'fs';
-import { join } from 'path';
 import { AuthUser } from '../../../common/decorators';
 import { AttendanceStatus } from '../../../common/enums';
 import { AccessService } from '../../access/access.service';
@@ -13,8 +10,7 @@ import { assertSpeechToText } from './ai-readiness';
 import { JOURNAL_EXTRACTOR, JournalExtractor, RosterEntry } from './journal-draft.schema';
 import { assembleDraft, DayAttendance, ExistingContent, reviewDraft } from './journal-review';
 import { SpeechToTextService } from './speech-to-text.service';
-
-export const AUDIO_PUBLIC_PATH = '/uploads/audio';
+import { MediaStorageService } from '../../storage/media-storage.service';
 
 /**
  * Voice → speech-to-text → (the teacher reads and corrects the text) → entries (LLM or keyword rules) → checked in
@@ -24,7 +20,6 @@ export const AUDIO_PUBLIC_PATH = '/uploads/audio';
 @Injectable()
 export class AiPipelineService {
   private readonly logger = new Logger(AiPipelineService.name);
-  private readonly uploadDir: string;
 
   constructor(
     private readonly stt: SpeechToTextService,
@@ -33,9 +28,8 @@ export class AiPipelineService {
     private readonly journals: DailyJournalsService,
     private readonly access: AccessService,
     private readonly config: ConfigService,
-  ) {
-    this.uploadDir = config.get<string>('uploadDir')!;
-  }
+    private readonly media: MediaStorageService,
+  ) {}
 
   /**
    * Step 1 on its own: the recording → text, which the teacher reads and corrects before the draft is made. The
@@ -119,17 +113,19 @@ export class AiPipelineService {
     return out;
   }
 
-  private async keep(audio: Express.Multer.File) {
-    const ext = audio.mimetype.includes('ogg') ? '.ogg' : audio.mimetype.includes('mp4') ? '.m4a' : '.webm';
-    const name = `${randomUUID()}${ext}`;
-    try {
-      await fs.mkdir(join(this.uploadDir, 'audio'), { recursive: true });
-      await fs.writeFile(join(this.uploadDir, 'audio', name), audio.buffer);
-    } catch (err) {
-      this.logger.error(`Could not store the recording: ${(err as Error).message}`);
-      throw new BadGatewayException('The recording could not be stored. Please try again.');
-    }
-    return `${AUDIO_PUBLIC_PATH}/${name}`;
+  /** Stored in ImageKit when it is configured, else under UPLOAD_DIR/audio (see MediaStorageService). */
+  private keep(audio: Express.Multer.File) {
+    const type = audio.mimetype;
+    const ext = type.includes('ogg')
+      ? '.ogg'
+      : type.includes('mp4') || type.includes('m4a')
+        ? '.m4a'
+        : type.includes('wav')
+          ? '.wav'
+          : type.includes('mpeg') || type.includes('mp3')
+            ? '.mp3'
+            : '.webm'; // MediaRecorder in Chrome / Edge
+    return this.media.save(audio, 'audio', ext);
   }
 
   private async roster(user: AuthUser, classId: string): Promise<RosterEntry[]> {

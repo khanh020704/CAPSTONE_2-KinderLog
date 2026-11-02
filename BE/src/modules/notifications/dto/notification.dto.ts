@@ -5,12 +5,12 @@ import {
   IsEnum,
   IsOptional,
   IsString,
-  IsUUID,
   MaxLength,
   MinLength,
 } from 'class-validator';
 import { PageQueryDto } from '../../../common/dto/pagination.dto';
 import { NotificationType, UserRole } from '../../../common/enums';
+import { IsGuid } from '../../../common/validators/guid';
 
 export class ListNotificationsQueryDto extends PageQueryDto {
   /** "true" → unread only */
@@ -28,7 +28,7 @@ export class SendNotificationDto {
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(500)
-  @IsUUID('all', { each: true })
+  @IsGuid({ each: true })
   userIds?: string[];
 
   @IsOptional()
@@ -52,6 +52,6 @@ export class SendNotificationDto {
 
   /** SYSTEM_ADMIN only, with `role` */
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   schoolId?: string;
 }

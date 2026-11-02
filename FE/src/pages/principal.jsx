@@ -7,6 +7,7 @@ import {
   CalendarDays,
   CheckCircle2,
   ClipboardCheck,
+  Copy,
   Download,
   GraduationCap,
   HeartPulse,
@@ -33,7 +34,7 @@ import { ANNOUNCEMENT_AUDIENCES, ANNOUNCEMENT_CATEGORIES, announcementParam, fro
 import { GENDER, GENDER_OPTIONS, HEALTH, RELATIONSHIP, RELATIONSHIP_OPTIONS, STATUS, STATUS_KEY, errorText, label, weekdaysText } from '../lib/labels'
 import { resetPasswordAction, statusActions } from '../lib/actions'
 import CrudPage, { FormFields, validateFields } from '../components/CrudPage'
-import { CameraBadge, CameraPlayer, CameraPreview, CameraStatusText } from '../components/Camera'
+import { CameraBadge, CameraPlayer, CameraPreview, CameraStatusText, PEER_STREAM, peerCode } from '../components/Camera'
 import { ActivityList } from './admin'
 import { Avatar, EmptyState, Loadable, Modal, PageHeader, SegBar, Select, SkeletonCards, SkeletonTable, StatCard, StatusBadge, useToast } from '../components/ui'
 
@@ -1258,6 +1259,7 @@ export function CameraSchedulePage() {
       columns={[
         { key: 'class', label: 'Class', sort: (c) => c.class?.name || '', render: (c) => c.class?.name },
         { key: 'name', label: 'Camera' },
+        { key: 'source', label: 'Camera Code', render: (c) => peerCode(c.streamUrl) || 'HLS / MP4 URL' },
         { key: 'days', label: 'Days', render: (c) => weekdaysText(c.allowedWeekdays) },
         { key: 'window', label: 'Viewing Time', render: (c) => `${hhmm(c.allowedStartTime)}–${hhmm(c.allowedEndTime)}` },
         { key: 'next', label: 'Next / Current', render: (c) => (c.window ? `${dayLabel(c.window.date)} ${c.window.start}` : '—') },
@@ -1268,10 +1270,14 @@ export function CameraSchedulePage() {
         { name: 'name', label: 'Camera Name', required: true, placeholder: 'e.g. Camera 01 – Phòng học' },
         {
           name: 'streamUrl',
-          label: 'Stream URL (HLS .m3u8 or MP4)',
+          label: 'Stream (peer:// = PeerJS camera, its code is the camera id · or an HLS / MP4 URL)',
           required: true,
           full: true,
-          validate: (v) => (!/^https?:\/\/\S+$/.test(v || '') ? 'Enter a full http(s) URL.' : ''),
+          placeholder: 'peer://',
+          validate: (v) =>
+            v === 'peer://' || PEER_STREAM.test(v || '') || /^https?:\/\/\S+$/.test(v || '')
+              ? ''
+              : 'Enter peer://, peer://<code> (lowercase letters, digits, -) or a full http(s) URL.',
         },
         { name: 'allowedWeekdays', label: 'Days', type: 'select', required: true, options: DAY_PRESETS, placeholder: undefined },
         {
@@ -1299,7 +1305,8 @@ export function CameraSchedulePage() {
           ? {
               classId: c.classId,
               name: c.name,
-              streamUrl: c.streamUrl,
+              // the backend sends peer://<id> for a camera coded by its id: edit it as the bare peer:// again
+              streamUrl: peerCode(c.streamUrl) === c.id.toLowerCase() ? 'peer://' : c.streamUrl,
               allowedWeekdays: DAY_PRESETS.some((d) => Number(d.value) === c.allowedWeekdays) ? String(c.allowedWeekdays) : '62',
               isActive: c.isActive ? 'yes' : 'no',
               allowedStartTime: hhmm(c.allowedStartTime),
@@ -1308,7 +1315,7 @@ export function CameraSchedulePage() {
           : {
               classId: '',
               name: '',
-              streamUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+              streamUrl: 'peer://',
               allowedWeekdays: '62',
               isActive: 'yes',
               allowedStartTime: '08:00',
@@ -1322,6 +1329,19 @@ export function CameraSchedulePage() {
         cams.reload()
       }}
       actions={(row) => [
+        ...(peerCode(row.streamUrl)
+          ? [
+              {
+                // The code to broadcast with on the camera device: camera.html?cam=<code>
+                label: 'Copy Camera Code',
+                icon: Copy,
+                onClick: async () => {
+                  await navigator.clipboard.writeText(peerCode(row.streamUrl))
+                  toast(`Camera code copied. Open camera.html?cam=${peerCode(row.streamUrl)} on the camera device.`)
+                },
+              },
+            ]
+          : []),
         {
           label: row.isActive ? 'Disable' : 'Enable',
           icon: Power,

@@ -1,6 +1,7 @@
 import { PartialType } from '@nestjs/swagger';
-import { IsEnum, IsOptional, IsString, IsUUID, Length, Matches, ValidateIf } from 'class-validator';
+import { IsEnum, IsOptional, IsString, Length, Matches, ValidateIf } from 'class-validator';
 import { RecordStatus } from '../../../common/enums';
+import { IsGuid } from '../../../common/validators/guid';
 
 export class CreateClassDto {
   @IsString()
@@ -18,7 +19,7 @@ export class CreateClassDto {
   /** A TEACHER of the same school, or null to leave the class without a homeroom teacher. */
   @IsOptional()
   @ValidateIf((_, v) => v !== null)
-  @IsUUID()
+  @IsGuid()
   homeroomTeacherId?: string | null;
 }
 
@@ -34,6 +35,6 @@ export class ListClassesQueryDto {
   academicYear?: string;
 
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   schoolId?: string;
 }

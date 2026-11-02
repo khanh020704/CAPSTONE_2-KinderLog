@@ -8,7 +8,6 @@ import {
   IsNumber,
   IsOptional,
   IsString,
-  IsUUID,
   Length,
   Max,
   Min,
@@ -22,6 +21,7 @@ import {
   Mood,
   SleepQuality,
 } from '../../../common/enums';
+import { IsGuid } from '../../../common/validators/guid';
 
 /** Every field a journal entry can carry. All optional: a bulk default or exception sets only what it names. */
 export class JournalFieldsDto {
@@ -45,7 +45,7 @@ export class JournalFieldsDto {
 }
 
 export class JournalExceptionDto extends JournalFieldsDto {
-  @IsUUID()
+  @IsGuid()
   studentId: string;
 }
 
@@ -54,7 +54,7 @@ export class JournalExceptionDto extends JournalFieldsDto {
  * overrides only the fields it sets for that one child (e.g. "cả lớp ăn hết, riêng bé An ăn ít").
  */
 export class BulkJournalDto {
-  @IsUUID()
+  @IsGuid()
   classId: string;
 
   /** YYYY-MM-DD, defaults to today */
@@ -93,7 +93,7 @@ export class ClassDayQueryDto {
 }
 
 export class TimelineQueryDto {
-  @IsUUID()
+  @IsGuid()
   studentId: string;
 
   @IsOptional()
@@ -106,7 +106,7 @@ export class TimelineQueryDto {
 }
 
 export class AttendanceQueryDto {
-  @IsUUID()
+  @IsGuid()
   studentId: string;
 
   /** YYYY-MM-DD, defaults to today */

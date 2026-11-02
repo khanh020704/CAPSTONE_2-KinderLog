@@ -254,11 +254,12 @@ export async function loadDemoData() {
     }
 
     // ---- cameras: Mặt Trời 1 is open all day, every day, so the demo always has a LIVE feed ----
+    // peer://: PeerJS cameras whose code is their own id (camera.html / viewer.html ?cam=<id>).
     await tx.getRepository(CameraStream).save([
       {
         classId: c1.id,
         name: 'Camera 01 – Phòng học',
-        streamUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+        streamUrl: 'peer://',
         allowedStartTime: '00:00',
         allowedEndTime: '23:59',
         allowedWeekdays: 254,
@@ -266,7 +267,7 @@ export async function loadDemoData() {
       {
         classId: c2.id,
         name: 'Camera 02 – Phòng học',
-        streamUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+        streamUrl: 'peer://',
         allowedStartTime: '14:00',
         allowedEndTime: '15:30',
         allowedWeekdays: 62,
@@ -274,8 +275,7 @@ export async function loadDemoData() {
       {
         classId: c2.id,
         name: 'Camera 03 – Sân chơi',
-        streamUrl:
-          'https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8',
+        streamUrl: 'peer://',
         allowedStartTime: '09:00',
         allowedEndTime: '10:00',
         allowedWeekdays: 62,

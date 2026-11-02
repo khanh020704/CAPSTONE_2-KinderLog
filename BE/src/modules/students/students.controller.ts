@@ -4,7 +4,6 @@ import {
   Delete,
   Get,
   Param,
-  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -16,8 +15,9 @@ import { ApiBearerAuth, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { AuthUser, CurrentUser, Roles } from '../../common/decorators';
 import { UserRole } from '../../common/enums';
 import { CreateStudentDto, LinkParentDto, ListStudentsQueryDto, UpdateStudentDto } from './dto/student.dto';
-import { PHOTO_PUBLIC_PATH, photoUpload } from '../daily-journals/upload.config';
+import { photoUpload } from '../daily-journals/upload.config';
 import { StudentsService } from './students.service';
+import { ParseGuidPipe } from '../../common/validators/guid';
 
 @ApiTags('Students')
 @ApiBearerAuth()
@@ -32,7 +32,7 @@ export class StudentsController {
   }
 
   @Get(':id')
-  findOne(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  findOne(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.students.findOne(user, id);
   }
 
@@ -47,7 +47,7 @@ export class StudentsController {
   @Patch(':id')
   update(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ParseGuidPipe) id: string,
     @Body() dto: UpdateStudentDto,
   ) {
     if (user.role === UserRole.TEACHER) {
@@ -64,15 +64,15 @@ export class StudentsController {
   @UseInterceptors(FileInterceptor('avatar', photoUpload()))
   setAvatar(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ParseGuidPipe) id: string,
     @UploadedFile() file?: Express.Multer.File,
   ) {
-    return this.students.setAvatar(user, id, file, PHOTO_PUBLIC_PATH);
+    return this.students.setAvatar(user, id, file);
   }
 
   @Roles(UserRole.PRINCIPAL)
   @Delete(':id')
-  remove(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  remove(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.students.remove(user, id);
   }
 
@@ -80,7 +80,7 @@ export class StudentsController {
   @Post(':id/parents')
   linkParent(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ParseGuidPipe) id: string,
     @Body() dto: LinkParentDto,
   ) {
     return this.students.linkParent(user, id, dto);
@@ -90,8 +90,8 @@ export class StudentsController {
   @Delete(':id/parents/:parentId')
   unlinkParent(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Param('parentId', ParseUUIDPipe) parentId: string,
+    @Param('id', ParseGuidPipe) id: string,
+    @Param('parentId', ParseGuidPipe) parentId: string,
   ) {
     return this.students.unlinkParent(user, id, parentId);
   }

@@ -7,18 +7,23 @@ import {
   IsObject,
   IsOptional,
   IsString,
-  IsUUID,
-  Matches,
   MaxLength,
+  ValidateBy,
   ValidateNested,
+  ValidationOptions,
 } from 'class-validator';
+import { IsGuid } from '../../../common/validators/guid';
+import { isUploadedAudio, isUploadedPhoto } from '../../storage/media-storage.service';
 
 export const MAX_TEXT = 2000;
 
-// Files a journal may point at: those uploaded through the API, nothing from elsewhere (parents' pages show them).
-const PHOTO_PATH = /^\/uploads\/photos\/[\w.-]+$/;
-const AUDIO_PATH = /^\/uploads\/audio\/[\w.-]+$/;
+// Files a journal may point at: those uploaded through the API, nothing from elsewhere (parents' pages show them):
+// /uploads/<photos|audio>/<file> on disk or the configured ImageKit folder (see isUploaded).
 const UPLOADED = { message: 'Use a file uploaded through KinderLog.' };
+const UploadedPhoto = (opts?: ValidationOptions) =>
+  ValidateBy({ name: 'isUploadedPhoto', validator: { validate: isUploadedPhoto } }, { ...UPLOADED, ...opts });
+const UploadedAudio = (opts?: ValidationOptions) =>
+  ValidateBy({ name: 'isUploadedAudio', validator: { validate: isUploadedAudio } }, { ...UPLOADED, ...opts });
 
 /** The six sections; a missing one is saved empty. */
 export class SectionsDto {
@@ -46,7 +51,7 @@ class JournalContentDto {
 }
 
 export class JournalListQueryDto {
-  @IsUUID()
+  @IsGuid()
   classId: string;
 
   /** review = waiting for approval or approved but not yet published. */
@@ -60,7 +65,7 @@ export class JournalListQueryDto {
 }
 
 export class CreateClassJournalDto extends JournalContentDto {
-  @IsUUID()
+  @IsGuid()
   classId: string;
 
   /** YYYY-MM-DD, defaults to today. */
@@ -79,7 +84,7 @@ export class CreateClassJournalDto extends JournalContentDto {
   @IsArray()
   @ArrayMaxSize(20)
   @IsString({ each: true })
-  @Matches(AUDIO_PATH, { each: true, ...UPLOADED })
+  @UploadedAudio({ each: true })
   audio?: string[];
 
   @IsOptional() @IsArray() @ArrayMaxSize(200) @Type(() => Object) issues?: unknown[];
@@ -91,7 +96,7 @@ export class UpdateClassJournalDto extends JournalContentDto {
   @ArrayMaxSize(50)
   @IsString({ each: true })
   @MaxLength(500, { each: true })
-  @Matches(PHOTO_PATH, { each: true, ...UPLOADED })
+  @UploadedPhoto({ each: true })
   photos?: string[];
 
   /** The teacher's decisions: [{ id, status, resolution, assignedTo }]. */
@@ -101,13 +106,13 @@ export class UpdateClassJournalDto extends JournalContentDto {
 /** Another recording added to the draft (POST /class-journals/:id/recordings). */
 export class AddRecordingDto extends JournalContentDto {
   @IsOptional() @IsString() @MaxLength(50_000) transcript?: string;
-  @IsOptional() @IsString() @MaxLength(500) @Matches(AUDIO_PATH, UPLOADED) audioUrl?: string;
+  @IsOptional() @IsString() @MaxLength(500) @UploadedAudio() audioUrl?: string;
   @IsOptional() @IsArray() @ArrayMaxSize(200) @Type(() => Object) issues?: unknown[];
 }
 
 /** multipart/form-data: the `audio` file, and the browser's own transcript as a fallback. */
 export class TranscribeDto {
-  @IsUUID()
+  @IsGuid()
   classId: string;
 
   @IsOptional()
@@ -118,7 +123,7 @@ export class TranscribeDto {
 
 /** The text the teacher checked → a draft. Nothing is saved. */
 export class VoiceDraftDto {
-  @IsUUID()
+  @IsGuid()
   classId: string;
 
   @IsString()
@@ -126,10 +131,10 @@ export class VoiceDraftDto {
   transcript: string;
 
   /** The recording sent before to /class-journals/transcribe. */
-  @IsOptional() @IsString() @MaxLength(500) @Matches(AUDIO_PATH, UPLOADED) audioUrl?: string;
+  @IsOptional() @IsString() @MaxLength(500) @UploadedAudio() audioUrl?: string;
 
   /** A further recording is checked against what this journal already says. */
-  @IsOptional() @IsUUID() journalId?: string;
+  @IsOptional() @IsGuid() journalId?: string;
 
   @IsOptional()
   @IsDateString({ strict: true })

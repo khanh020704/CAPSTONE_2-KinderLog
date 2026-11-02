@@ -1341,9 +1341,11 @@ function JournalWorkspace({ cls }) {
       if (e.status === 409) list.reload()
     }
   }
+  // The backend decides: a teacher changes today's journal only, earlier days are read-only (the principal corrects them).
+  const canWrite = date >= today
   const open = (j) => {
     setDate(j.date)
-    setView({ mode: j.status === 'published' ? 'read' : 'edit', id: j.id })
+    setView({ mode: j.status === 'published' || !j.editable ? 'read' : 'edit', id: j.id })
   }
   const home = () => setView({ mode: 'home' })
 
@@ -1358,7 +1360,9 @@ function JournalWorkspace({ cls }) {
   if (view.mode === 'edit' || view.mode === 'read') {
     const current = opened.data
     if (!current || current.id !== view.id || !day.data || day.data.date !== current.date) return <SkeletonTable />
-    if (view.mode === 'edit') return <JournalEditor key={current.id} cls={cls} students={students} absentIds={absentIds} initial={current} onChanged={list.reload} onClose={home} />
+    if (view.mode === 'edit' && current.editable)
+      return <JournalEditor key={current.id} cls={cls} students={students} absentIds={absentIds} initial={current} onChanged={list.reload} onClose={home} />
+    const published = current.status === 'published'
     return (
       <div className="narrow wide">
         <PageHeader
@@ -1368,16 +1372,27 @@ function JournalWorkspace({ cls }) {
             </button>
           }
           title={`Journal · ${dayLabel(current.date)}`}
-          subtitle={`${cls.name} · published ${relTime(current.publishedAt)}${current.editedAt ? ` · updated ${relTime(current.editedAt)}` : ''}`}
+          subtitle={
+            published
+              ? `${cls.name} · published ${relTime(current.publishedAt)}${current.editedAt ? ` · updated ${relTime(current.editedAt)}` : ''}`
+              : `${cls.name} · not published · last edited ${relTime(current.updatedAt)}`
+          }
           actions={
             <>
-              <StatusBadge status="Published" />
-              <button className="btn" onClick={() => setView({ mode: 'edit', id: current.id })}>
-                <PenLine size={18} /> Edit Journal
-              </button>
+              <StatusBadge status={JOURNAL_STATUS[current.status]} />
+              {current.editable && (
+                <button className="btn" onClick={() => setView({ mode: 'edit', id: current.id })}>
+                  <PenLine size={18} /> Edit Journal
+                </button>
+              )}
             </>
           }
         />
+        {!current.editable && (
+          <p className="privacy-note">
+            <Lock size={16} /> Read only: a journal can be changed on its own day only. Ask the principal to correct an earlier day.
+          </p>
+        )}
         <div className="card">
           <JournalTimeline journal={current} students={students} />
         </div>
@@ -1415,7 +1430,7 @@ function JournalWorkspace({ cls }) {
               </div>
               <div>
                 <button className="btn btn-primary" onClick={() => open(journal)}>
-                  {journal.status === 'published' ? (
+                  {journal.status === 'published' || !journal.editable ? (
                     <>
                       <Eye size={18} /> View Journal
                     </>
@@ -1427,6 +1442,14 @@ function JournalWorkspace({ cls }) {
                 </button>
               </div>
             </section>
+          ) : !canWrite ? (
+            <div className="card">
+              <EmptyState
+                icon={Lock}
+                title={`No journal for ${fmtDate(date)}.`}
+                text="A journal can be written on its own day only. Ask the principal to add or correct an earlier day."
+              />
+            </div>
           ) : (
             <section className="stack">
               <div className="choice-grid">
@@ -1496,7 +1519,7 @@ function JournalWorkspace({ cls }) {
                       <td data-label="Last edited">{relTime(j.updatedAt)}</td>
                       <td data-label="Actions" className="td-plain" style={{ textAlign: 'right' }}>
                         <button className="btn btn-sm" onClick={() => open(j)}>
-                          {j.status === 'published' ? 'View' : 'Open'}
+                          {j.status === 'published' || !j.editable ? 'View' : 'Open'}
                         </button>
                       </td>
                     </tr>

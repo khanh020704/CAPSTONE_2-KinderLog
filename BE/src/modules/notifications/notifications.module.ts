@@ -1,15 +1,4 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Module,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Module, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthUser, CurrentUser, Roles } from '../../common/decorators';
@@ -18,6 +7,7 @@ import { User } from '../users/entities/user.entity';
 import { ListNotificationsQueryDto, SendNotificationDto } from './dto/notification.dto';
 import { Notification } from './entities/notification.entity';
 import { NotificationsService } from './notifications.service';
+import { ParseGuidPipe } from '../../common/validators/guid';
 
 @ApiTags('Notifications')
 @ApiBearerAuth()
@@ -50,12 +40,12 @@ class NotificationsController {
   }
 
   @Patch(':id/read')
-  markRead(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  markRead(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.notifications.markRead(user, id);
   }
 
   @Delete(':id')
-  remove(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  remove(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.notifications.remove(user, id);
   }
 }

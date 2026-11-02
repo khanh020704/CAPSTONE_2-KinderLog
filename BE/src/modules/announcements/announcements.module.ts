@@ -1,15 +1,4 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Module,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Module, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthUser, CurrentUser, Roles } from '../../common/decorators';
@@ -23,6 +12,7 @@ import {
   UpdateAnnouncementDto,
 } from './dto/announcement.dto';
 import { SchoolAnnouncement } from './entities/school-announcement.entity';
+import { ParseGuidPipe } from '../../common/validators/guid';
 
 @ApiTags('School Announcements')
 @ApiBearerAuth()
@@ -37,7 +27,7 @@ class AnnouncementsController {
   }
 
   @Get(':id')
-  findOne(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  findOne(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.announcements.findOne(user, id);
   }
 
@@ -52,7 +42,7 @@ class AnnouncementsController {
   @Patch(':id')
   update(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ParseGuidPipe) id: string,
     @Body() dto: UpdateAnnouncementDto,
   ) {
     return this.announcements.update(user, id, dto);
@@ -60,7 +50,7 @@ class AnnouncementsController {
 
   @Roles(UserRole.PRINCIPAL, UserRole.SYSTEM_ADMIN)
   @Delete(':id')
-  remove(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  remove(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.announcements.remove(user, id);
   }
 }

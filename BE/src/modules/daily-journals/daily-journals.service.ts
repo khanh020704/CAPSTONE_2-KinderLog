@@ -4,7 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { AuthUser } from '../../common/decorators';
 import { AttendanceStatus, JournalSource, JournalStatus, RecordStatus, UserRole } from '../../common/enums';
-import { addDays, isoDate } from '../../common/utils/date.util';
+import { isoDate } from '../../common/utils/date.util';
 import { AccessService } from '../access/access.service';
 import { Student } from '../students/entities/student.entity';
 import { BulkJournalDto, JournalFieldsDto, UpsertJournalDto } from './dto/journal.dto';
@@ -48,15 +48,26 @@ export class DailyJournalsService {
     return isoDate(this.tz);
   }
 
-  /** Teachers log today or the past week only; principals may correct any past day. Never the future. */
+  /**
+   * Teachers write, change, approve and publish today's journal only (school time zone); an earlier day stays readable
+   * and is handled by the principal, who may correct any past day. Never the future.
+   */
   resolveDate(user: AuthUser, date?: string): string {
     const today = this.today();
     const d = date ?? today;
     if (d > today) throw new BadRequestException('Journals cannot be written for a future date');
-    if (user.role === UserRole.TEACHER && d < addDays(today, -7)) {
-      throw new ForbiddenException('Teachers can only edit journals of the last 7 days');
+    if (user.role === UserRole.TEACHER && d < today) {
+      throw new ForbiddenException(
+        "Teachers can only change today's journal. Ask the principal to correct an earlier day.",
+      );
     }
     return d;
+  }
+
+  /** Whether `user` may still change a journal of `date` (the rule of resolveDate), shown to the FE as `editable`. */
+  isEditable(user: AuthUser, date: string): boolean {
+    if (user.role !== UserRole.TEACHER && user.role !== UserRole.PRINCIPAL) return false;
+    return date <= this.today() && (user.role === UserRole.PRINCIPAL || date === this.today());
   }
 
   /**

@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -17,6 +18,7 @@ import { prepareTestDatabase } from './test-db';
 const TZ = process.env.APP_TIMEZONE ?? 'Asia/Ho_Chi_Minh';
 const today = isoDate(TZ);
 const PHONES = {
+  admin: '0901000001',
   principal: '0902000001',
   otherPrincipal: '0902000002',
   teacher: '0903000002', // homeroom teacher of Mặt Trời 2
@@ -92,10 +94,66 @@ describe('Class and day', () => {
   });
 });
 
+describe("Edit window: teachers change today's journal only (school time zone), the principal any past day", () => {
+  it("today: the teacher writes, changes and approves the class's journal; never the future", async () => {
+    const created = await api('post', '/class-journals', 'otherTeacher')
+      .send({ classId: otherClassId, sections: { meal: 'Hôm nay các con ăn cơm.' } })
+      .expect(201);
+    expect(created.body).toMatchObject({ date: today, editable: true });
+    await api('put', `/class-journals/${created.body.id}`, 'otherTeacher')
+      .send({ sections: { meal: 'Hôm nay các con ăn hết suất.' } })
+      .expect(200);
+    await api('post', `/class-journals/${created.body.id}/approve`, 'otherTeacher').expect(201);
+    await api('post', '/class-journals', 'otherTeacher')
+      .send({ classId: otherClassId, date: addDays(today, 1), sections: { meal: 'Ngày mai.' } })
+      .expect(400);
+  });
+
+  it('yesterday and before: the teacher cannot add a journal', async () => {
+    for (const back of [1, 3, 8]) {
+      const res = await api('post', '/class-journals', 'teacher')
+        .send({ classId, date: addDays(today, -back), sections: { meal: 'Ngày cũ.' } })
+        .expect(403);
+      expect(res.body.message).toMatch(/only change today's journal/);
+    }
+  });
+
+  it('an earlier journal stays readable for the teacher; only the principal changes, approves or publishes it', async () => {
+    const day = addDays(today, -10);
+    const old = await api('post', '/class-journals', 'principal')
+      .send({ classId, date: day, sections: { meal: 'Mười ngày trước.' } })
+      .expect(201);
+    expect(old.body.editable).toBe(true); // for the principal
+
+    const seen = await api('get', `/class-journals/${old.body.id}`, 'teacher').expect(200);
+    expect(seen.body).toMatchObject({ id: old.body.id, editable: false });
+    const list = await api('get', `/class-journals?classId=${classId}&date=${day}`, 'teacher').expect(200);
+    expect(list.body.items).toEqual([expect.objectContaining({ id: old.body.id, editable: false })]);
+
+    await api('put', `/class-journals/${old.body.id}`, 'teacher')
+      .send({ sections: { meal: 'Giáo viên sửa.' } })
+      .expect(403);
+    await api('post', `/class-journals/${old.body.id}/recordings`, 'teacher')
+      .send({ transcript: 'Ghi thêm.' })
+      .expect(403);
+    await api('post', `/class-journals/${old.body.id}/approve`, 'teacher').expect(403);
+
+    await api('put', `/class-journals/${old.body.id}`, 'principal')
+      .send({ sections: { meal: 'Hiệu trưởng sửa.' } })
+      .expect(200);
+    await api('post', `/class-journals/${old.body.id}/approve`, 'principal').expect(201);
+    // approved by the principal, still not the teacher's to publish
+    await api('post', `/class-journals/${old.body.id}/publish`, 'teacher').expect(403);
+    const after = await api('get', `/class-journals/${old.body.id}`, 'teacher').expect(200);
+    expect(after.body).toMatchObject({ status: 'approved', sections: { meal: 'Hiệu trưởng sửa.' } });
+  });
+});
+
 describe('Attendance for parents', () => {
   it('parents see attendance as soon as it is saved (before publishing); staff notes on present children stay hidden', async () => {
-    // a weekend day without entries (no fixture data on weekends; 2 days ago is used by "Class and day")
-    const day = [3, 4, 5, 6, 7]
+    // a weekend day without entries (no fixture data on weekends; 2 days ago is used by "Class and day").
+    // Seven days in a row always hold a weekend day; 3–7 alone has none when the run is on a Monday.
+    const day = [3, 4, 5, 6, 7, 8, 9]
       .map((n) => addDays(today, -n))
       .find((d) => [0, 6].includes(new Date(`${d}T00:00:00Z`).getUTCDay()))!;
     const get = async (who: string) =>
@@ -158,6 +216,16 @@ describe('Attendance notes', () => {
     await sheet([{ studentId: b.id, attendance: 'PRESENT', absenceReason: 'Đi học lại, còn hơi ho' }]);
     expect(await noteOf(b.id)).toBe('Đi học lại, còn hơi ho');
   });
+});
+
+describe('Journal photo upload permissions', () => {
+  it.each(['admin', 'principal', 'teacher'])('%s can reach the upload handler', async (who) => {
+    const res = await api('post', '/class-journals/photos', who).expect(400);
+    expect(res.body.message).toBe('Attach at least one image in the "photos" field');
+  });
+
+  it('parents cannot upload journal photos', () =>
+    api('post', '/class-journals/photos', 'parent').expect(403));
 });
 
 describe('The class journal: DRAFT → APPROVED → PUBLISHED', () => {
@@ -227,10 +295,10 @@ describe('The class journal: DRAFT → APPROVED → PUBLISHED', () => {
       .expect(200);
     expect(res.body).toMatchObject({ status: 'draft' });
     expect(Object.keys(res.body.personal)).toHaveLength(2);
-    const empty = await api('post', '/class-journals', 'teacher')
+    const empty = await api('post', '/class-journals', 'principal')
       .send({ classId, date: addDays(today, -1) })
       .expect(201);
-    await api('post', `/class-journals/${empty.body.id}/approve`, 'teacher').expect(409);
+    await api('post', `/class-journals/${empty.body.id}/approve`, 'principal').expect(409);
   });
 
   it('APPROVED: still nothing for parents; PUBLISHED: each parent sees the class and only their own child', async () => {
@@ -323,7 +391,7 @@ describe('Voice: a further recording adds to the draft, and can correct it', () 
 
   it('a voice journal starts in REVIEW with its transcript, recording and points to confirm', async () => {
     const draft = (
-      await api('post', '/class-journals/voice-draft', 'teacher')
+      await api('post', '/class-journals/voice-draft', 'principal')
         .send({
           classId,
           date: day,
@@ -337,7 +405,7 @@ describe('Voice: a further recording adds to the draft, and can correct it', () 
     expect(unknown).toMatchObject({ held: true, status: 'open' });
     expect(JSON.stringify(draft.sections)).not.toMatch(/Tùng/i); // a held statement is in no section
 
-    const res = await api('post', '/class-journals', 'teacher')
+    const res = await api('post', '/class-journals', 'principal')
       .send({
         classId,
         date: day,
@@ -355,18 +423,20 @@ describe('Voice: a further recording adds to the draft, and can correct it', () 
   });
 
   it('open points block approving; the teacher decides each one', async () => {
-    await api('post', `/class-journals/${id}/approve`, 'teacher').expect(409);
-    const j = (await api('get', `/class-journals/${id}`, 'teacher').expect(200)).body;
+    await api('post', `/class-journals/${id}/approve`, 'principal').expect(409);
+    const j = (await api('get', `/class-journals/${id}`, 'principal').expect(200)).body;
     const held = j.issues.find((i: any) => i.held);
     // a held statement needs a real decision: "confirmed" is not one
-    await api('put', `/class-journals/${id}`, 'teacher')
+    await api('put', `/class-journals/${id}`, 'principal')
       .send({ issues: [{ id: held.id, resolution: 'confirmed' }] })
       .expect(400);
     const decisions = j.issues.map((i: any) => ({
       id: i.id,
       resolution: i.held ? 'discarded' : 'confirmed',
     }));
-    const res = await api('put', `/class-journals/${id}`, 'teacher').send({ issues: decisions }).expect(200);
+    const res = await api('put', `/class-journals/${id}`, 'principal')
+      .send({ issues: decisions })
+      .expect(200);
     expect(res.body.issues.every((i: any) => i.status === 'resolved')).toBe(true);
     expect(res.body.status).toBe('review');
   });
@@ -374,7 +444,7 @@ describe('Voice: a further recording adds to the draft, and can correct it', () 
   it('recording more adds to the text, and "cô nhầm" replaces the statement it corrects', async () => {
     const given = child.fullName.split(' ').slice(-1)[0];
     const draft = (
-      await api('post', '/class-journals/voice-draft', 'teacher')
+      await api('post', '/class-journals/voice-draft', 'principal')
         .send({
           classId,
           journalId: id,
@@ -385,7 +455,7 @@ describe('Voice: a further recording adds to the draft, and can correct it', () 
     const fix = draft.issues.find((i: any) => i.type === 'correction');
     expect(fix).toMatchObject({ previousText: expect.stringMatching(/ăn hết suất/) });
 
-    const res = await api('post', `/class-journals/${id}/recordings`, 'teacher')
+    const res = await api('post', `/class-journals/${id}/recordings`, 'principal')
       .send({
         sections: draft.sections,
         personal: draft.personal,
@@ -415,16 +485,135 @@ describe('Integrity checks', () => {
       .expect(400);
   });
 
+  it('recordings stored in ImageKit are accepted only from the audio folder', async () => {
+    const root = `${process.env.IMAGEKIT_URL_ENDPOINT}${process.env.IMAGEKIT_FOLDER}`;
+    for (const bad of [
+      `${root}/photos/rec.webm`,
+      `${root}/audio/../rec.webm`,
+      'https://evil.example/kinderlog/audio/rec.webm',
+    ]) {
+      await api('post', '/class-journals', 'principal')
+        .send({ classId, date: addDays(today, -5), source: 'voice', audio: [bad] })
+        .expect(400);
+    }
+    for (const bad of [`${root}/audio/rec.webm?tr=w-10`, `${root}/audio/rec.webm?x=1`]) {
+      await api('post', '/class-journals', 'principal')
+        .send({ classId, date: addDays(today, -5), source: 'voice', audio: [bad] })
+        .expect(400);
+    }
+    // ImageKit recordings are served as stored (?tr=orig-true), not transcoded
+    const audio = [
+      `${root}/audio/0b6f1c2e-2222-4a5b-9c3d-123456789abc.webm?tr=orig-true`,
+      `${root}/audio/0b6f1c2e-3333-4a5b-9c3d-123456789abc.webm`,
+      '/uploads/audio/x.webm',
+    ];
+    const j = await api('post', '/class-journals', 'principal')
+      .send({ classId, date: addDays(today, -5), source: 'voice', transcript: 'Các con ăn cơm.', audio })
+      .expect(201);
+    expect(j.body.audio).toEqual(audio);
+  });
+
+  it('an uploaded photo is named after its image type, never after the name the browser sent', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const res = await api('post', '/class-journals/photos', 'teacher')
+      .attach('photos', png, { filename: 'evil.html', contentType: 'image/png' })
+      .expect(201);
+    expect(res.body.urls[0]).toMatch(/^\/uploads\/photos\/[0-9a-f-]{36}\.png$/);
+    const served = await request(http).get(res.body.urls[0]).expect(200);
+    expect(served.headers['content-type']).toMatch(/^image\/png/);
+  });
+
+  describe('signed ImageKit URLs', () => {
+    // Signing needs the private key but no network; nothing is uploaded in these tests.
+    const key = 'private_e2e_signing_key';
+    beforeAll(() => (process.env.IMAGEKIT_PRIVATE_KEY = key));
+    afterAll(() => (process.env.IMAGEKIT_PRIVATE_KEY = ''));
+    const endpoint = () => process.env.IMAGEKIT_URL_ENDPOINT!;
+    const root = () => `${endpoint()}${process.env.IMAGEKIT_FOLDER}`;
+    const verify = (signed: string, stored: string) => {
+      const m = signed.match(/^(.*)[?&]ik-t=(\d+)&ik-s=([0-9a-f]{40})$/);
+      expect(m?.[1]).toBe(stored);
+      const expected = createHmac('sha1', key)
+        .update(stored.slice(endpoint().length + 1) + m![2])
+        .digest('hex');
+      expect(m![3]).toBe(expected);
+      expect(Number(m![2]) * 1000).toBeGreaterThan(Date.now() + 60 * 60 * 1000 - 1000); // at least the TTL ahead
+    };
+
+    it('responses carry signed URLs; a signed URL sent back is stored unsigned', async () => {
+      const audio = `${root()}/audio/0b6f1c2e-4444-4a5b-9c3d-123456789abc.webm?tr=orig-true`;
+      const photo = `${root()}/photos/0b6f1c2e-5555-4a5b-9c3d-123456789abc.jpg`;
+      const j = await api('post', '/class-journals', 'principal')
+        .send({
+          classId,
+          date: addDays(today, -9),
+          source: 'voice',
+          transcript: 'Các con ngủ ngon.',
+          audio: [audio],
+        })
+        .expect(201);
+      verify(j.body.audio[0], audio);
+
+      const put = await api('put', `/class-journals/${j.body.id}`, 'principal')
+        .send({ photos: [photo] })
+        .expect(200);
+      verify(put.body.photos[0], photo);
+      // The browser edits the journal with what it was given: the signed URLs go back, nothing is signed twice.
+      const again = await api('put', `/class-journals/${j.body.id}`, 'principal')
+        .send({ photos: put.body.photos })
+        .expect(200);
+      verify(again.body.photos[0], photo);
+      expect(again.body.photos[0].match(/ik-s=/g)).toHaveLength(1);
+      const fresh = await api('get', `/class-journals/${j.body.id}`, 'principal').expect(200);
+      verify(fresh.body.audio[0], audio);
+
+      // A signature does not make a foreign address acceptable.
+      await api('put', `/class-journals/${j.body.id}`, 'principal')
+        .send({ photos: [`https://evil.example/x.jpg?ik-t=1&ik-s=${'0'.repeat(40)}`] })
+        .expect(400);
+    });
+
+    it('/health reports that ImageKit files are handed out signed', async () => {
+      const h = await request(http).get('/health').expect(200);
+      expect(h.body).toMatchObject({ mediaStorage: 'imagekit', signedMediaUrls: true });
+    });
+  });
+
+  it('photos stored in ImageKit are accepted only from the configured folder', async () => {
+    const base = `${process.env.IMAGEKIT_URL_ENDPOINT}${process.env.IMAGEKIT_FOLDER}/photos`;
+    const j = (
+      await api('post', '/class-journals', 'principal')
+        .send({ classId, date: addDays(today, -11), sections: { meal: 'Các con ăn cơm.' } })
+        .expect(201)
+    ).body;
+    const ok = [`${base}/0b6f1c2e-1111-4a5b-9c3d-123456789abc.jpg`, '/uploads/photos/abc.jpg'];
+    const saved = await api('put', `/class-journals/${j.id}`, 'principal').send({ photos: ok }).expect(200);
+    expect(saved.body.photos).toEqual(ok);
+    for (const bad of [
+      `${process.env.IMAGEKIT_URL_ENDPOINT}/other/abc.jpg`, // another folder of the same account
+      `${base}/../secret.jpg`,
+      `${base}/sub/abc.jpg`,
+      `https://ik.imagekit.io/someone-else${process.env.IMAGEKIT_FOLDER}/photos/abc.jpg`,
+    ]) {
+      await api('put', `/class-journals/${j.id}`, 'principal')
+        .send({ photos: [bad] })
+        .expect(400);
+    }
+  });
+
   it('publishing twice at the same time publishes once', async () => {
     const day = addDays(today, -6);
     const j = (
-      await api('post', '/class-journals', 'teacher')
+      await api('post', '/class-journals', 'principal')
         .send({ classId, date: day, sections: { meal: 'Các con ăn cơm.' } })
         .expect(201)
     ).body;
-    await api('post', `/class-journals/${j.id}/approve`, 'teacher').expect(201);
+    await api('post', `/class-journals/${j.id}/approve`, 'principal').expect(201);
     const results = await Promise.all([
-      api('post', `/class-journals/${j.id}/publish`, 'teacher'),
+      api('post', `/class-journals/${j.id}/publish`, 'principal'),
       api('post', `/class-journals/${j.id}/publish`, 'principal'),
     ]);
     expect(results.map((r) => r.status).sort()).toEqual([201, 409]);

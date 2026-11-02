@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthUser, CurrentUser, Roles } from '../../common/decorators';
 import { UserRole } from '../../common/enums';
@@ -10,6 +10,7 @@ import {
   UpdateUserDto,
 } from './dto/user.dto';
 import { UsersService } from './users.service';
+import { ParseGuidPipe } from '../../common/validators/guid';
 
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -31,7 +32,7 @@ export class UsersController {
 
   @Roles(UserRole.SYSTEM_ADMIN, UserRole.PRINCIPAL)
   @Get(':id')
-  findOne(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  findOne(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.users.findOne(user, id);
   }
 
@@ -43,7 +44,7 @@ export class UsersController {
 
   @Roles(UserRole.SYSTEM_ADMIN, UserRole.PRINCIPAL)
   @Patch(':id')
-  update(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateUserDto) {
+  update(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string, @Body() dto: UpdateUserDto) {
     return this.users.update(user, id, dto);
   }
 
@@ -52,7 +53,7 @@ export class UsersController {
   @Patch(':id/status')
   setStatus(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ParseGuidPipe) id: string,
     @Body() dto: UpdateStatusDto,
   ) {
     return this.users.setStatus(user, id, dto);
@@ -60,13 +61,13 @@ export class UsersController {
 
   @Roles(UserRole.SYSTEM_ADMIN, UserRole.PRINCIPAL)
   @Post(':id/reset-password')
-  resetPassword(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  resetPassword(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.users.resetPassword(user, id);
   }
 
   @Roles(UserRole.SYSTEM_ADMIN, UserRole.PRINCIPAL)
   @Delete(':id')
-  remove(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  remove(@CurrentUser() user: AuthUser, @Param('id', ParseGuidPipe) id: string) {
     return this.users.remove(user, id);
   }
 }

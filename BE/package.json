@@ -42,7 +42,7 @@
     "ioredis": "^5.11.1",
     "joi": "^18.2.9",
     "mssql": "^11.0.2",
-    "multer": "^2.4.0",
+    "multer": "^2.5.0",
     "openai": "^7.33.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
@@ -77,5 +77,14 @@
     "tsconfig-paths": "^4.2.0",
     "typescript": "~5.8",
     "typescript-eslint": "^8.71.2"
+  },
+  "overrides": {
+    "multer": "$multer",
+    "@nestjs/swagger": {
+      "js-yaml": "^5.4.2"
+    },
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   }
 }

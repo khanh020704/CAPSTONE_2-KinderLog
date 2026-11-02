@@ -51,3 +51,7 @@ export class CameraStream extends BaseEntity {
   @Column({ name: 'is_active', default: true })
   isActive: boolean;
 }
+
+/** The URL handed to players: a bare "peer://" means the camera's own id is its PeerJS code (camera.html ?cam=<id>). */
+export const streamUrlOf = (cam: Pick<CameraStream, 'id' | 'streamUrl'>) =>
+  cam.streamUrl === 'peer://' ? `peer://${cam.id.toLowerCase()}` : cam.streamUrl;

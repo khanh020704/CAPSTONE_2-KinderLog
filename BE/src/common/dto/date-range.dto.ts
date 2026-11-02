@@ -1,4 +1,5 @@
-import { IsDateString, IsOptional, IsUUID } from 'class-validator';
+import { IsDateString, IsOptional } from 'class-validator';
+import { IsGuid } from '../validators/guid';
 
 export class DateRangeQueryDto {
   /** YYYY-MM-DD, defaults to 6 days before `to` */
@@ -12,11 +13,11 @@ export class DateRangeQueryDto {
   to?: string;
 
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   classId?: string;
 
   /** SYSTEM_ADMIN only: which school to report on */
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   schoolId?: string;
 }

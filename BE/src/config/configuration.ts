@@ -25,6 +25,17 @@ export const envValidationSchema = Joi.object({
 
   UPLOAD_DIR: Joi.string().default('uploads'),
   MAX_UPLOAD_MB: Joi.number().default(25),
+  // Photos and recordings go to ImageKit when the endpoint and the private key are both set (else to UPLOAD_DIR)
+  IMAGEKIT_URL_ENDPOINT: Joi.string()
+    .uri({ scheme: ['https'] })
+    .allow('')
+    .default(''),
+  IMAGEKIT_PRIVATE_KEY: Joi.string().allow('').default(''),
+  IMAGEKIT_FOLDER: Joi.string()
+    .pattern(/^(\/[\w-]+)+$/)
+    .default('/kinderlog'),
+  // Signed URLs handed to browsers stay valid between one and two of these (seconds)
+  IMAGEKIT_SIGNED_URL_TTL: Joi.number().integer().min(60).default(3600),
 
   AI_MODE: Joi.string().valid('mock', 'live').default('live'),
   OPENAI_API_KEY: Joi.string().allow('').default(''),

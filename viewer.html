@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MeetNow - Xem Camera</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<link rel="icon" type="image/png" href="icon.png">
+<style>
+  :root{
+    --bg:#0a1628;
+    --panel:#10203a;
+    --panel2:#15294a;
+    --accent:#2f8fff;
+    --accent2:#1565d8;
+    --text:#e8f1ff;
+    --muted:#7fa3cf;
+    --danger:#ff5b6e;
+    --good:#3ddc97;
+    --warn:#f5b942;
+    --radius:14px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;overflow:hidden;}
+  body{
+    font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
+    background:radial-gradient(1200px 800px at 20% -10%, #16335e 0%, var(--bg) 60%);
+    color:var(--text);
+    display:flex;flex-direction:column;
+    height:100vh;height:100dvh;
+  }
+  header{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+    padding:14px 24px;
+    background:rgba(23,26,33,0.7);backdrop-filter:blur(10px);
+    border-bottom:1px solid #1d3a63;
+  }
+  .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;}
+  .logo img{width:32px;height:32px;border-radius:8px;object-fit:cover;}
+  .logo .dot{width:12px;height:12px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));}
+  .add-form{display:flex;gap:8px;flex:1;max-width:420px;min-width:240px;}
+  .add-form input{
+    flex:1;min-width:0;padding:10px 14px;border-radius:10px;
+    border:1px solid #26456f;background:#0c1b32;color:var(--text);
+    font-size:16px;outline:none;
+  }
+  .add-form input:focus{border-color:var(--accent);}
+  .add-form button{
+    padding:10px 16px;border:none;border-radius:10px;white-space:nowrap;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));
+    color:#fff;font-weight:600;font-size:14px;cursor:pointer;
+  }
+  .net-badge{
+    font-size:12px;color:var(--muted);background:var(--panel2);
+    padding:6px 12px;border-radius:20px;display:flex;align-items:center;gap:6px;white-space:nowrap;
+  }
+  .net-badge .d{width:8px;height:8px;border-radius:50%;background:var(--warn);}
+  .net-badge.ok .d{background:var(--good);}
+
+  #grid{
+    flex:1;min-height:0;overflow-y:auto;
+    padding:20px;
+    display:grid;gap:14px;
+    grid-template-columns:repeat(auto-fill, minmax(340px, 1fr));
+    align-content:start;
+  }
+  #grid.single{grid-template-columns:1fr;align-content:stretch;}
+  #grid.single .tile{aspect-ratio:auto;height:100%;min-height:240px;}
+
+  .tile{
+    position:relative;aspect-ratio:16/9;
+    background:#000;border:1px solid #1d3a63;border-radius:var(--radius);
+    overflow:hidden;
+  }
+  .tile video{width:100%;height:100%;object-fit:contain;background:#000;display:block;}
+  .tile .state{
+    position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:10px;
+    color:var(--muted);font-size:14px;text-align:center;padding:16px;
+    background:rgba(10,22,40,0.85);
+  }
+  .tile.online .state{display:none;}
+  .spinner{
+    width:30px;height:30px;border-radius:50%;
+    border:3px solid #26456f;border-top-color:var(--accent);
+    animation:spin 1s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .tile.offline .spinner{display:none;}
+
+  .tile .top{
+    position:absolute;top:10px;left:10px;right:10px;z-index:2;
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+    pointer-events:none;
+  }
+  .tag{
+    background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);
+    padding:5px 11px;border-radius:20px;font-size:13px;font-weight:600;
+    display:flex;align-items:center;gap:7px;min-width:0;
+  }
+  .tag .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .tag .sdot{width:9px;height:9px;border-radius:50%;background:var(--warn);flex-shrink:0;}
+  .tile.online .tag .sdot{background:var(--danger);animation:blink 1.2s infinite;}
+  .tile.offline .tag .sdot{background:#5a6b85;}
+  @keyframes blink{50%{opacity:.3;}}
+  .clock{font-size:12px;font-weight:500;font-variant-numeric:tabular-nums;flex-shrink:0;}
+
+  .tile .actions{
+    position:absolute;bottom:10px;right:10px;z-index:2;
+    display:flex;gap:6px;
+    opacity:0;transition:opacity .2s;
+  }
+  .tile:hover .actions, .tile.show-actions .actions{opacity:1;}
+  .act{
+    width:38px;height:38px;border-radius:50%;
+    border:1px solid #26456f;background:rgba(21,41,74,0.85);color:var(--text);
+    cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;
+  }
+  .act:hover{background:var(--accent2);}
+  .act.on{background:linear-gradient(135deg,var(--accent),var(--accent2));border-color:var(--accent);}
+  .act.danger:hover{background:var(--danger);}
+
+  .tile:fullscreen{border-radius:0;border:none;}
+  .tile:-webkit-full-screen{border-radius:0;border:none;width:100%;height:100%;}
+
+  #empty{
+    grid-column:1/-1;align-self:center;justify-self:center;
+    text-align:center;color:var(--muted);max-width:420px;padding:40px 20px;
+  }
+  #empty .big{font-size:46px;margin-bottom:10px;}
+  #empty h2{color:var(--text);margin:0 0 8px;font-size:20px;}
+  #empty p{margin:0;font-size:14px;line-height:1.6;}
+
+  #toast{
+    position:fixed;top:18px;left:50%;transform:translateX(-50%);
+    background:var(--panel2);border:1px solid #26456f;padding:10px 18px;
+    border-radius:10px;font-size:13px;display:none;z-index:50;
+    box-shadow:0 8px 24px rgba(0,0,0,0.4);max-width:90vw;text-align:center;
+  }
+  ::-webkit-scrollbar{width:8px;}
+  ::-webkit-scrollbar-thumb{background:#26456f;border-radius:4px;}
+  @media(max-width:560px){
+    header{padding:12px 16px;}
+    .add-form{max-width:none;order:3;flex-basis:100%;}
+    #grid{padding:12px;gap:10px;grid-template-columns:1fr;}
+    .tile .actions{opacity:1;}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <img src="logo.jpg" alt="Logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-block';">
+    <span class="dot" style="display:none;"></span> MeetNow Viewer
+  </div>
+  <form class="add-form" onsubmit="event.preventDefault(); addFromInput();">
+    <input type="text" id="codeInput" placeholder="Nhập mã camera (VD: cam1 hoặc id camera)" maxlength="64" autocomplete="off">
+    <button type="submit">+ Thêm</button>
+  </form>
+  <div class="net-badge" id="netBadge"><span class="d"></span><span id="netText">Đang kết nối...</span></div>
+</header>
+
+<div id="toast"></div>
+
+<div id="grid">
+  <div id="empty">
+    <div class="big">📹</div>
+    <h2>Chưa có camera nào</h2>
+    <p>Mở <b>camera.html</b> trên thiết bị cần phát, rồi nhập <b>mã camera</b> ở ô phía trên để xem trực tiếp. Có thể thêm nhiều camera để theo dõi cùng lúc.</p>
+  </div>
+</div>
+
+<script>
+// Tiền tố peer id dùng chung với camera.html — phải giống nhau ở cả 2 file
+const CAM_PREFIX = 'meetnow-cam-';
+const LIST_KEY = 'meetnow_viewer_cams';
+const RETRY_MS = 4000;          // thời gian chờ trước khi thử kết nối lại camera
+const HEARTBEAT_TIMEOUT = 12000; // không nhận được ping trong khoảng này -> coi như camera mất
+
+const ICE_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+  ]
+};
+
+let peer = null;
+const cams = {}; // code -> { code, tile, conn, call, lastPing, status, retryTimer }
+const gridEl = document.getElementById('grid');
+const emptyEl = document.getElementById('empty');
+
+// Thẻ <video> có tiếng bị chặn autoplay trên mobile -> phát lại khi người dùng chạm màn hình
+let pendingPlays = [];
+['touchstart','click'].forEach(evt=>{
+  document.addEventListener(evt, ()=>{
+    pendingPlays.forEach(v=> v.play().catch(()=>{}));
+    pendingPlays = [];
+  }, { passive:true });
+});
+
+function toast(msg, ms=2500){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(t._tm);
+  t._tm = setTimeout(()=> t.style.display='none', ms);
+}
+
+// Mã camera = phần sau tiền tố CAM_PREFIX; dán cả peer id đầy đủ (meetnow-cam-...) cũng được, tiền tố sẽ bị bỏ
+function sanitizeCode(v){
+  return (v||'').toLowerCase().trim().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'')
+    .replace(/^(meetnow-cam-)+/,'').replace(/^-+|-+$/g,'');
+}
+
+function saveList(){
+  try{ localStorage.setItem(LIST_KEY, JSON.stringify(Object.keys(cams))); }catch(e){}
+}
+function loadList(){
+  try{ return JSON.parse(localStorage.getItem(LIST_KEY)) || []; }catch(e){ return []; }
+}
+
+function viewerName(){
+  return /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent) ? 'Điện thoại' : 'Máy tính';
+}
+
+// ===== Peer của người xem (id ngẫu nhiên, dùng chung cho tất cả camera) =====
+function setNet(ok, text){
+  document.getElementById('netBadge').classList.toggle('ok', ok);
+  document.getElementById('netText').textContent = text;
+}
+
+function initPeer(){
+  if(peer && !peer.destroyed) peer.destroy();
+  setNet(false, 'Đang kết nối...');
+  peer = new Peer('meetnow-viewer-' + Math.random().toString(36).substring(2,10), { debug:1, config: ICE_CONFIG });
+
+  peer.on('open', ()=>{
+    setNet(true, 'Đã kết nối');
+    Object.values(cams).forEach(st=>{ if(!st.conn) connectCam(st.code); });
+  });
+
+  // Camera gọi lại sau khi viewer mở data connection
+  peer.on('call', call=>{
+    const code = call.peer.startsWith(CAM_PREFIX) ? call.peer.slice(CAM_PREFIX.length) : null;
+    const st = code && cams[code];
+    if(!st){ call.close(); return; }
+    call.answer();
+    if(st.call && st.call !== call){ try{ st.call.close(); }catch(e){} }
+    st.call = call;
+    call.on('stream', s=>{
+      const v = st.tile.querySelector('video');
+      v.srcObject = s;
+      playVideo(v);
+      st.lastPing = Date.now();
+      setStatus(code, 'online');
+      const name = call.metadata && call.metadata.name;
+      if(name) setName(code, name);
+    });
+    call.on('close', ()=>{ if(st.call === call) scheduleRetry(code); });
+    call.on('error', ()=>{ if(st.call === call) scheduleRetry(code); });
+  });
+
+  peer.on('error', err=>{
+    if(err.type === 'peer-unavailable'){
+      // "Could not connect to peer meetnow-cam-xxx" -> camera đó đang tắt
+      const m = (err.message || '').match(/peer\s+(\S+)/i);
+      const id = m && m[1];
+      if(id && id.startsWith(CAM_PREFIX)){
+        const code = id.slice(CAM_PREFIX.length);
+        if(cams[code]) scheduleRetry(code, 'Camera chưa phát hoặc đã tắt');
+      }
+      return;
+    }
+    console.error(err);
+    if(err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'unavailable-id'){
+      setNet(false, 'Mất mạng, đang thử lại...');
+      setTimeout(()=>{ if(!peer || peer.destroyed || peer.disconnected) initPeer(); }, 3000);
+    }
+  });
+
+  peer.on('disconnected', ()=>{
+    setNet(false, 'Đang kết nối lại...');
+    setTimeout(()=>{ if(peer && !peer.destroyed && peer.disconnected) peer.reconnect(); }, 1000);
+  });
+}
+
+// ===== Quản lý từng camera =====
+function connectCam(code){
+  const st = cams[code];
+  if(!st) return;
+  clearTimeout(st.retryTimer);
+  cleanup(st);
+  if(!peer || !peer.open){ setStatus(code, 'connecting'); return; } // sẽ tự kết nối khi peer 'open'
+  setStatus(code, 'connecting');
+  const conn = peer.connect(CAM_PREFIX + code, { reliable:true, metadata:{ name: viewerName() } });
+  st.conn = conn;
+  st.lastPing = Date.now();
+  conn.on('data', d=>{
+    if(st.conn !== conn) return;
+    st.lastPing = Date.now();
+    if(d && d.type === 'info'){
+      if(d.name) setName(code, d.name);
+      st.tile.querySelector('[data-act=mute]').style.display = d.audio ? '' : 'none';
+    }
+  });
+  conn.on('close', ()=>{ if(st.conn === conn) scheduleRetry(code); });
+  conn.on('error', ()=>{ if(st.conn === conn) scheduleRetry(code); });
+}
+
+function cleanup(st){
+  const conn = st.conn, call = st.call;
+  st.conn = null; st.call = null;
+  try{ conn && conn.close(); }catch(e){}
+  try{ call && call.close(); }catch(e){}
+}
+
+function scheduleRetry(code, msg){
+  const st = cams[code];
+  if(!st) return;
+  cleanup(st);
+  setStatus(code, 'offline', msg);
+  clearTimeout(st.retryTimer);
+  st.retryTimer = setTimeout(()=> connectCam(code), RETRY_MS);
+}
+
+// Theo dõi nhịp tim: camera rớt mạng đột ngột thường không báo 'close' kịp
+setInterval(()=>{
+  const now = Date.now();
+  Object.values(cams).forEach(st=>{
+    if(st.conn && now - st.lastPing > HEARTBEAT_TIMEOUT){
+      scheduleRetry(st.code, 'Mất tín hiệu từ camera');
+    }
+  });
+}, 2000);
+
+function setStatus(code, status, msg){
+  const st = cams[code];
+  if(!st) return;
+  st.status = status;
+  const tile = st.tile;
+  tile.classList.remove('online','offline','connecting');
+  tile.classList.add(status);
+  const txt = tile.querySelector('.state-text');
+  if(status === 'connecting') txt.textContent = 'Đang kết nối tới camera...';
+  if(status === 'offline') txt.textContent = (msg || 'Mất kết nối') + ' — tự động thử lại...';
+}
+
+function setName(code, name){
+  const st = cams[code];
+  if(st) st.tile.querySelector('.name').textContent = name + ' · ' + code;
+}
+
+function playVideo(v){
+  const p = v.play();
+  if(p && p.catch) p.catch(()=> pendingPlays.push(v));
+}
+
+function createTile(code){
+  const tile = document.createElement('div');
+  tile.className = 'tile connecting';
+  tile.innerHTML = `
+    <video autoplay playsinline muted></video>
+    <div class="state"><div class="spinner"></div><div class="state-text">Đang kết nối tới camera...</div></div>
+    <div class="top">
+      <div class="tag"><span class="sdot"></span><span class="name"></span></div>
+      <div class="tag clock"></div>
+    </div>
+    <div class="actions">
+      <button class="act" data-act="mute" title="Bật/tắt tiếng" style="display:none;">🔇</button>
+      <button class="act" data-act="snap" title="Chụp ảnh">📸</button>
+      <button class="act" data-act="reload" title="Kết nối lại">🔄</button>
+      <button class="act" data-act="full" title="Toàn màn hình">⛶</button>
+      <button class="act danger" data-act="remove" title="Bỏ camera này">✕</button>
+    </div>`;
+  tile.querySelector('.name').textContent = code;
+  tile.querySelector('[data-act=mute]').onclick = e=>{ e.stopPropagation(); toggleMute(code); };
+  tile.querySelector('[data-act=snap]').onclick = e=>{ e.stopPropagation(); snapshot(code); };
+  tile.querySelector('[data-act=reload]').onclick = e=>{ e.stopPropagation(); connectCam(code); };
+  tile.querySelector('[data-act=full]').onclick = e=>{ e.stopPropagation(); toggleFullscreen(tile); };
+  tile.querySelector('[data-act=remove]').onclick = e=>{ e.stopPropagation(); removeCamera(code); };
+  tile.addEventListener('dblclick', ()=> toggleFullscreen(tile));
+  // Trên mobile không có hover -> chạm để hiện/ẩn nút
+  tile.addEventListener('click', ()=>{
+    tile.classList.add('show-actions');
+    clearTimeout(tile._hideTm);
+    tile._hideTm = setTimeout(()=> tile.classList.remove('show-actions'), 3500);
+  });
+  return tile;
+}
+
+function addCamera(code, silent){
+  code = sanitizeCode(code);
+  if(!code){ if(!silent) toast('Mã camera không hợp lệ'); return; }
+  if(cams[code]){ if(!silent) toast('Camera "' + code + '" đã có trong danh sách'); return; }
+  const tile = createTile(code);
+  cams[code] = { code, tile, conn:null, call:null, lastPing:0, status:'connecting', retryTimer:null };
+  gridEl.appendChild(tile);
+  updateLayout();
+  saveList();
+  connectCam(code);
+}
+
+function addFromInput(){
+  const input = document.getElementById('codeInput');
+  addCamera(input.value);
+  input.value = '';
+}
+
+function removeCamera(code){
+  const st = cams[code];
+  if(!st) return;
+  clearTimeout(st.retryTimer);
+  cleanup(st);
+  st.tile.remove();
+  delete cams[code];
+  updateLayout();
+  saveList();
+}
+
+function updateLayout(){
+  const n = Object.keys(cams).length;
+  emptyEl.style.display = n ? 'none' : '';
+  gridEl.classList.toggle('single', n === 1);
+}
+
+function toggleMute(code){
+  const st = cams[code];
+  const v = st.tile.querySelector('video');
+  v.muted = !v.muted;
+  if(!v.muted) playVideo(v);
+  const btn = st.tile.querySelector('[data-act=mute]');
+  btn.textContent = v.muted ? '🔇' : '🔊';
+  btn.classList.toggle('on', !v.muted);
+}
+
+function snapshot(code){
+  const st = cams[code];
+  const v = st.tile.querySelector('video');
+  if(st.status !== 'online' || !v.videoWidth){ toast('Camera chưa có hình để chụp'); return; }
+  const c = document.createElement('canvas');
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext('2d').drawImage(v, 0, 0);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  a.download = `${code}_${ts}.png`;
+  a.href = c.toDataURL('image/png');
+  a.click();
+  toast('Đã lưu ảnh chụp');
+}
+
+function toggleFullscreen(tile){
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if(fsEl){
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    return;
+  }
+  if(tile.requestFullscreen) tile.requestFullscreen().catch(()=>{});
+  else if(tile.webkitRequestFullscreen) tile.webkitRequestFullscreen();
+  else{
+    // iOS Safari chỉ cho phép toàn màn hình trên thẻ <video>
+    const v = tile.querySelector('video');
+    if(v.webkitEnterFullscreen) v.webkitEnterFullscreen();
+    else toast('Trình duyệt không hỗ trợ toàn màn hình');
+  }
+}
+
+// Đồng hồ trên mỗi khung hình (tiện theo dõi thời điểm)
+setInterval(()=>{
+  const now = new Date().toLocaleTimeString('vi-VN');
+  document.querySelectorAll('.tile .clock').forEach(el=> el.textContent = now);
+}, 1000);
+
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState !== 'visible') return;
+  if(peer && peer.disconnected && !peer.destroyed) peer.reconnect();
+  // quay lại tab -> kết nối lại ngay các camera đang mất, không chờ hết thời gian retry
+  Object.values(cams).forEach(st=>{ if(st.status === 'offline') connectCam(st.code); });
+});
+
+window.addEventListener('beforeunload', ()=>{ if(peer) peer.destroy(); });
+
+document.addEventListener('DOMContentLoaded', ()=>{
+  const fromUrl = (new URLSearchParams(location.search).get('cam') || '').split(',');
+  const codes = [...new Set([...loadList(), ...fromUrl].map(sanitizeCode).filter(Boolean))];
+  initPeer();
+  codes.forEach(c=> addCamera(c, true));
+});
+</script>
+</body>
+</html>

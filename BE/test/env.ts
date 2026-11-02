@@ -12,3 +12,8 @@ if (process.env.REDIS_URL) process.env.REDIS_URL = `${process.env.REDIS_URL.repl
 process.env.AI_MODE = 'mock';
 // The suites sign in many times; the real 10/minute limit is checked by its own test.
 process.env.LOGIN_RATE_LIMIT = '1000';
+// Uploads stay on disk (no private key: nothing is ever sent to ImageKit), but journals may still point at
+// this fixed ImageKit folder, so the address check is tested the same way whatever .env holds.
+process.env.IMAGEKIT_URL_ENDPOINT = 'https://ik.imagekit.io/kinderlog-e2e';
+process.env.IMAGEKIT_PRIVATE_KEY = '';
+process.env.IMAGEKIT_FOLDER = '/kinderlog';

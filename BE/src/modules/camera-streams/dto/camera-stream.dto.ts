@@ -4,26 +4,50 @@ import {
   IsInt,
   IsOptional,
   IsString,
-  IsUrl,
-  IsUUID,
+  isURL,
   Length,
   Matches,
   Max,
   Min,
+  ValidateBy,
+  ValidationOptions,
 } from 'class-validator';
+import { IsGuid } from '../../../common/validators/guid';
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
 
+/**
+ * peer://[code]: a live WebRTC camera published through PeerJS (camera.html / viewer.html codes).
+ * Plain "peer://" uses the camera's own id as its code (see streamUrlOf); a code may be up to 64 characters.
+ */
+const PEER_STREAM = /^peer:\/\/(?:[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)?$/;
+
+/** An http(s) HLS / MP4 URL, or peer://[code]. */
+const IsStreamUrl = (options?: ValidationOptions) =>
+  ValidateBy(
+    {
+      name: 'isStreamUrl',
+      validator: {
+        validate: (v: unknown) =>
+          typeof v === 'string' &&
+          (PEER_STREAM.test(v) || isURL(v, { require_tld: false, protocols: ['http', 'https'] })),
+        defaultMessage: () =>
+          'streamUrl must be an http(s) URL (HLS .m3u8 or MP4), peer:// (the camera id is the code) or peer://<code> (lowercase letters, digits, -)',
+      },
+    },
+    options,
+  );
+
 export class CreateCameraStreamDto {
-  @IsUUID()
+  @IsGuid()
   classId: string;
 
   @IsString()
   @Length(1, 80)
   name: string;
 
-  /** HLS (.m3u8) or MP4 URL of the demo feed */
-  @IsUrl({ require_tld: false, protocols: ['http', 'https'] })
+  /** HLS (.m3u8) / MP4 URL, or a PeerJS camera: peer:// (code = this camera's id) or peer://<code> */
+  @IsStreamUrl()
   streamUrl: string;
 
   /** HH:mm in the school's timezone */
@@ -49,17 +73,17 @@ export class UpdateCameraStreamDto extends PartialType(CreateCameraStreamDto) {}
 
 export class ListCameraStreamsQueryDto {
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   classId?: string;
 }
 
 export class WatchQueryDto {
   /** Parent: which child. Staff can use ?classId instead. */
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   studentId?: string;
 
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   classId?: string;
 }

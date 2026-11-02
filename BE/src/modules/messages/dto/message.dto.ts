@@ -1,8 +1,9 @@
-import { IsDateString, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { IsDateString, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { PageQueryDto } from '../../../common/dto/pagination.dto';
+import { IsGuid } from '../../../common/validators/guid';
 
 export class SendMessageDto {
-  @IsUUID()
+  @IsGuid()
   receiverId: string;
 
   @IsString()

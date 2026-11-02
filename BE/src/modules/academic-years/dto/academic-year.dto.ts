@@ -1,6 +1,7 @@
 import { PartialType } from '@nestjs/swagger';
-import { IsDateString, IsEnum, IsOptional, IsUUID, Matches } from 'class-validator';
+import { IsDateString, IsEnum, IsOptional, Matches } from 'class-validator';
 import { AcademicYearStatus } from '../../../common/enums';
+import { IsGuid } from '../../../common/validators/guid';
 
 export class CreateAcademicYearDto {
   /** Same format as classes.academicYear */
@@ -20,7 +21,7 @@ export class CreateAcademicYearDto {
 
   /** SYSTEM_ADMIN only */
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   schoolId?: string;
 }
 
@@ -33,6 +34,6 @@ export class ListAcademicYearsQueryDto {
 
   /** SYSTEM_ADMIN only */
   @IsOptional()
-  @IsUUID()
+  @IsGuid()
   schoolId?: string;
 }
