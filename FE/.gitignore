@@ -1,0 +1,10 @@
+node_modules
+dist
+.vite
+*.local
+
+# Local env (copy of .env.example)
+.env
+
+# TURN credentials for the cameras (copy of public/ice-config.example.js)
+public/ice-config.js
