@@ -119,15 +119,3 @@ Camera được mô phỏng bằng một thiết bị có webcam (laptop, điệ
 
 Trình duyệt chỉ cho dùng webcam trên `https` hoặc `localhost`, nên khi phát từ thiết bị khác cần dùng link ngrok.
 
----
-
-## 6. Lỗi thường gặp
-
-| Hiện tượng | Cách xử lý |
-|---|---|
-| Đăng nhập báo *Cannot reach the server* | Backend chưa chạy – bật backend rồi tải lại trang |
-| Mở qua ngrok báo *Blocked request. This host is not allowed* | Đang chạy `npm run dev`; chuyển sang `npm run build` + `npm run preview` |
-| Link ngrok không có thay đổi mới | Chạy lại `npm run build` |
-| Camera kẹt ở *Connecting…* khi dùng 4G | Kiểm tra `public/ice-config.js` có tài khoản TURN, rồi build lại |
-| Ghi âm không được | Cho phép trình duyệt dùng micro, dùng Chrome hoặc Edge |
-| Trang hiển thị sai chữ khi bật dịch tự động | Tắt dịch trang của trình duyệt cho địa chỉ KinderLog |
