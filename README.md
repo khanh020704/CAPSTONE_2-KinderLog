@@ -9,7 +9,7 @@ Một ứng dụng duy nhất cho 4 vai trò: **System Admin, Hiệu trưởng, 
 | Framework | React 18 + Vite 5 |
 | Điều hướng | React Router 6 |
 | Icon | lucide-react |
-| Camera lớp học | PeerJS (WebRTC), hls.js cho luồng HLS / MP4 |
+| Camera lớp học | PeerJS (WebRTC) |
 | Font | Baloo 2, Nunito |
 
 ---
