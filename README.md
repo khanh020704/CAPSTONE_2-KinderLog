@@ -2,6 +2,8 @@
 
 KinderLog is a preschool daily journal and reporting system with multimodal AI integration, built for preschools, their teachers and the families they serve. Teachers record a child's day by speaking naturally in Vietnamese; AI turns the recording into a structured draft that the teacher reviews before anything reaches parents. Schools manage classes, staff and children in one place, and parents follow their child's day, message teachers and watch the classroom camera during permitted hours.
 
+Capstone 2 project – team **C2SE.10**, International School, Duy Tan University.
+
 ## 1. Project overview
 
 In many preschools, a child's day is still reported on paper, in scattered chat groups or not at all. Teachers spend their evenings writing the same notes for every child, parents get little or inconsistent information, and school leaders have no reliable picture of attendance, health or communication across classes.
@@ -120,8 +122,8 @@ The project uses Scrum with three sprints, incremental releases and testing at t
 
 | # | Student ID | Full name | Role | Email |
 |---|---|---|---|---|
-| 1 | 28210203983 | Ho Ngoc Dang Khanh | Scrum Master | hndangkhanh0207@gmail.com |
-| 2 | 28219106936 | Ho A Bao | Product Owner | hoabao1@gmail.com |
+| 1 | 28210203983 | Ho Ngoc Dang Khanh | Scrum Master | hongocdangkhanh12b2@gmail.com |
+| 2 | 28219106936 | Ho A Bao | Product Owner | hoabao1@dtu.edu.vn |
 | 3 | 28211406961 | Le Nhat Anh | Developer | anhnhatle1904@gmail.com |
 | 4 | 27211202824 | Vo Le Duy | Developer | duyvole9@gmail.com |
 
@@ -157,13 +159,17 @@ For project information, collaboration or academic discussion, please contact th
 
 ## 14. Run locally
 
-The source code lives in two branches: [`BE`](https://github.com/khanh020704/CAPSTONE_2-KinderLog/tree/BE) (folder `BE/`) and [`FE`](https://github.com/khanh020704/CAPSTONE_2-KinderLog/tree/FE) (folder `FE/`). Each has its own README with the full setup. You need **Node.js 20** and **Docker Desktop**.
+The repository holds the backend in `BE/` and the frontend in `FE/`; each folder has its own README with the full setup. You need **Node.js 20** and **Docker Desktop**.
+
+```bash
+git clone https://github.com/khanh020704/CAPSTONE_2-KinderLog.git
+cd CAPSTONE_2-KinderLog
+```
 
 Backend (API on port 3000):
 
 ```bash
-git clone -b BE https://github.com/khanh020704/CAPSTONE_2-KinderLog.git kinderlog-be
-cd kinderlog-be/BE
+cd BE
 cp .env.example .env      # edit JWT_SECRET, admin account, Groq API key
 docker compose up -d      # SQL Server + Redis
 npm install
@@ -172,11 +178,10 @@ npm run db:seed:admin
 npm run start:dev
 ```
 
-Frontend (Vite, port 5173):
+Frontend (Vite, port 5173), in another terminal:
 
 ```bash
-git clone -b FE https://github.com/khanh020704/CAPSTONE_2-KinderLog.git kinderlog-fe
-cd kinderlog-fe/FE
+cd FE
 npm install
 npm run dev
 ```
