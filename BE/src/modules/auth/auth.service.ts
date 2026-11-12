@@ -18,29 +18,24 @@ import { UsersService } from '../users/users.service';
 import { SettingsService } from '../system/settings.service';
 import { ChangePasswordDto, LoginDto } from './dto/auth.dto';
 import { JwtPayload } from './jwt.strategy';
-
-/** Consecutive failed sign-ins before a phone number is blocked, and for how long (User Story 2.1). */
-const MAX_FAILED_LOGINS = Number(process.env.LOGIN_MAX_FAILED ?? 5);
-const LOGIN_LOCK_MS = Number(process.env.LOGIN_LOCK_MINUTES ?? 10) * 60_000;
+import { LoginLockoutService } from './login-lockout.service';
 
 @Injectable()
 export class AuthService {
-  /** phone → consecutive failures and, once blocked, until when. Kept in memory: a restart clears it. */
-  private readonly failures = new Map<string, { count: number; until?: number }>();
-
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
     private readonly usersService: UsersService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly settings: SettingsService,
+    private readonly lockout: LoginLockoutService,
   ) {}
 
   async login(dto: LoginDto) {
     const phone = dto.phone.trim();
-    const blocked = this.failures.get(phone)?.until;
-    if (blocked && blocked > Date.now()) {
-      const minutes = Math.ceil((blocked - Date.now()) / 60_000);
+    const blockedMs = await this.lockout.remainingMs(phone);
+    if (blockedMs > 0) {
+      const minutes = Math.ceil(blockedMs / 60_000);
       throw new HttpException(
         `Too many failed sign-in attempts. Try again in ${minutes} minute${minutes > 1 ? 's' : ''}.`,
         HttpStatus.TOO_MANY_REQUESTS,
@@ -57,10 +52,10 @@ export class AuthService {
     // Same message for "no such phone" and "wrong password" so accounts cannot be enumerated.
     const invalid = new UnauthorizedException('Incorrect phone number or password');
     if (!user || !(await bcrypt.compare(dto.password, user.passwordHash))) {
-      this.recordFailure(phone);
+      await this.lockout.recordFailure(phone);
       throw invalid;
     }
-    this.failures.delete(phone);
+    await this.lockout.clear(phone);
     if (dto.role && dto.role !== user.role) throw invalid;
     if (user.status !== RecordStatus.ACTIVE) {
       throw new ForbiddenException(
@@ -79,15 +74,6 @@ export class AuthService {
       expiresIn: this.config.get<string>('jwt.expiresIn'),
       user: await this.usersService.profile(user.id),
     };
-  }
-
-  private recordFailure(phone: string) {
-    const prev = this.failures.get(phone);
-    const count = (prev?.until && prev.until <= Date.now() ? 0 : (prev?.count ?? 0)) + 1;
-    this.failures.set(phone, {
-      count,
-      until: count >= MAX_FAILED_LOGINS ? Date.now() + LOGIN_LOCK_MS : undefined,
-    });
   }
 
   me(user: AuthUser) {

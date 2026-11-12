@@ -621,9 +621,11 @@ describe('Integrity checks', () => {
   });
 
   it('a child who changed class keeps the journals of the class they were in, and never sees the new class’s past', async () => {
-    const from = addDays(today, -14);
+    const from = addDays(today, -21);
     // A weekend day in the range: no attendance entry for the child that day, yet it is still their class's journal.
-    const weekend = [8, 9, 10, 11, 12, 13]
+    // Seven days in a row always hold a weekend day, and 15–21 days back is used by no other class journal here
+    // (8–13 could land on the 11-days-back journal of the photo test and fail with 409 on some run dates).
+    const weekend = [15, 16, 17, 18, 19, 20, 21]
       .map((n) => addDays(today, -n))
       .find((d) => [0, 6].includes(new Date(`${d}T00:00:00Z`).getUTCDay()))!;
     const sat = (

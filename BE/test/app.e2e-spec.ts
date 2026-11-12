@@ -8,6 +8,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
 import { addDays, clock, isoDate } from '../src/common/utils/date.util';
 import { CacheService } from '../src/modules/cache/cache.service';
+import { LoginLockoutService, MAX_FAILED_LOGINS } from '../src/modules/auth/login-lockout.service';
 import { loadDemoData } from './fixtures/demo-data';
 import { prepareTestDatabase } from './test-db';
 
@@ -759,6 +760,35 @@ describe('9. Principal & Admin — management', () => {
     const ad = (await api('get', '/reports/admin-dashboard', 'admin').expect(200)).body;
     expect(ad.totals.schools).toBe(2);
     await api('get', `/reports/dashboard?schoolId=${schools[0].id}`, 'admin').expect(200);
+  });
+});
+
+describe('9b. Login lockout (User Story 2.1)', () => {
+  const phone = PHONES.teacher;
+  const keys = [`login:fail:${phone}`, `login:lock:${phone}`];
+  afterAll(() => app.get(CacheService).del(...keys));
+
+  it(`${MAX_FAILED_LOGINS} wrong passwords in a row block the number, even for the right password, and the block is kept in Redis`, async () => {
+    const cache = app.get(CacheService);
+    await cache.del(...keys);
+    for (let i = 0; i < MAX_FAILED_LOGINS; i++) await login(phone, 'wrong-password').expect(401);
+    const res = await login(phone).expect(429);
+    expect(res.body.message).toMatch(/Too many failed sign-in attempts/);
+    if (cache.ready) {
+      // Stored in Redis, so a backend restart does not lift it.
+      expect(await cache.remainingMs(`login:lock:${phone}`)).toBeGreaterThan(0);
+      // A fresh service instance (as after a restart) still sees the block.
+      expect(await new LoginLockoutService(cache).remainingMs(phone)).toBeGreaterThan(0);
+    }
+  });
+
+  it('a successful sign-in resets the count of failures', async () => {
+    const cache = app.get(CacheService);
+    await cache.del(...keys);
+    for (let i = 0; i < MAX_FAILED_LOGINS - 1; i++) await login(phone, 'wrong-password').expect(401);
+    await login(phone).expect(200);
+    await login(phone, 'wrong-password').expect(401);
+    await login(phone).expect(200);
   });
 });
 

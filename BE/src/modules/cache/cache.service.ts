@@ -59,6 +59,54 @@ export class CacheService implements OnModuleDestroy {
     }
   }
 
+  /** Whether Redis can be used right now; callers that must not lose state keep a fallback when it is not. */
+  get ready(): boolean {
+    return this.redis?.status === 'ready';
+  }
+
+  /** Atomically adds 1 to `key` and (re)starts its expiry; null when Redis is unavailable. */
+  async increment(key: string, ttlSeconds: number): Promise<number | null> {
+    if (!this.ready) return null;
+    try {
+      const res = await this.redis!.multi().incr(key).expire(key, ttlSeconds).exec();
+      const count = res?.[0]?.[1];
+      return typeof count === 'number' ? count : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Milliseconds until `key` expires: 0 when it does not exist, null when Redis is unavailable. */
+  async remainingMs(key: string): Promise<number | null> {
+    if (!this.ready) return null;
+    try {
+      const ms = await this.redis!.pttl(key);
+      return ms > 0 ? ms : 0;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Sets `key` for `ttlMs` milliseconds; false when Redis is unavailable. */
+  async setFor(key: string, value: string, ttlMs: number): Promise<boolean> {
+    if (!this.ready) return false;
+    try {
+      await this.redis!.set(key, value, 'PX', ttlMs);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async del(...keys: string[]): Promise<void> {
+    if (!this.ready || !keys.length) return;
+    try {
+      await this.redis!.del(...keys);
+    } catch {
+      /* fail open */
+    }
+  }
+
   /** Drop every key starting with `prefix` (e.g. after journals of a school change). */
   async invalidate(prefix: string): Promise<void> {
     if (this.redis?.status !== 'ready') return;
