@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Baby,
@@ -66,6 +66,16 @@ export function PrincipalDashboard() {
   const dash = useApi(() => api.reports.dashboard({ from: today, to: today }), [])
   const cams = useApi(() => api.cameras.list(), [])
   const classes = useClasses()
+  // Figures refresh every 60 seconds while the dashboard is open (PB21)
+  const { reload: reloadDash } = dash
+  const { reload: reloadActivity } = activity
+  useEffect(() => {
+    const t = setInterval(() => {
+      reloadDash()
+      reloadActivity()
+    }, 60_000)
+    return () => clearInterval(t)
+  }, [reloadDash, reloadActivity])
   const teacherOf = (classId) => classes.data?.find((c) => c.id === classId)?.homeroomTeacher?.fullName
 
   return (
