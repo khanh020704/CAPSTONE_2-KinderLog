@@ -122,7 +122,8 @@ export const api = {
     remove: (id) => del(`/students/${id}`),
     /** status: 'ACTIVE' (default) | 'INACTIVE' — an inactive link hides the child from that parent. */
     linkParent: (id, parentId, relationship, isPrimary, status) => post(`/students/${id}/parents`, { parentId, relationship, isPrimary, status }),
-    unlinkParent: (id, parentId) => del(`/students/${id}/parents/${parentId}`),    /** Profile photo (File/Blob); replaces the previous one. */
+    unlinkParent: (id, parentId) => del(`/students/${id}/parents/${parentId}`),
+    /** Profile photo (File/Blob); replaces the previous one. */
     uploadAvatar: (id, file) => request('POST', `/students/${id}/avatar`, { form: toForm({}, { avatar: file }) }),
   },
 
