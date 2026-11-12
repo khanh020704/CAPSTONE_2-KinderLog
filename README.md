@@ -120,8 +120,8 @@ The project uses Scrum with three sprints, incremental releases and testing at t
 
 | # | Student ID | Full name | Role | Email |
 |---|---|---|---|---|
-| 1 | 28210203983 | Ho Ngoc Dang Khanh | Scrum Master | hongocdangkhanh12b2@gmail.com |
-| 2 | 28219106936 | Ho A Bao | Product Owner | hoabao1@dtu.edu.vn |
+| 1 | 28210203983 | Ho Ngoc Dang Khanh | Scrum Master | hndangkhanh0207@gmail.com |
+| 2 | 28219106936 | Ho A Bao | Product Owner | hoabao1@gmail.com |
 | 3 | 28211406961 | Le Nhat Anh | Developer | anhnhatle1904@gmail.com |
 | 4 | 27211202824 | Vo Le Duy | Developer | duyvole9@gmail.com |
 
