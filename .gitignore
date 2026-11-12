@@ -1,0 +1,2 @@
+# Database backups hold real children's data: never commit them
+*.bak

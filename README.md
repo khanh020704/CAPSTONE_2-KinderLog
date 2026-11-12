@@ -2,6 +2,7 @@
 
 KinderLog is a preschool daily journal and reporting system with multimodal AI integration, built for preschools, their teachers and the families they serve. Teachers record a child's day by speaking naturally in Vietnamese; AI turns the recording into a structured draft that the teacher reviews before anything reaches parents. Schools manage classes, staff and children in one place, and parents follow their child's day, message teachers and watch the classroom camera during permitted hours.
 
+Capstone 2 project – team **C2SE.10**, International School, Duy Tan University.
 
 ## 1. Project overview
 
@@ -121,8 +122,8 @@ The project uses Scrum with three sprints, incremental releases and testing at t
 
 | # | Student ID | Full name | Role | Email |
 |---|---|---|---|---|
-| 1 | 28210203983 | Ho Ngoc Dang Khanh | Scrum Master | hndangkhanh0207@gmail.com |
-| 2 | 28219106936 | Ho A Bao | Product Owner | hoabao1@gmail.com |
+| 1 | 28210203983 | Ho Ngoc Dang Khanh | Scrum Master | hongocdangkhanh12b2@gmail.com |
+| 2 | 28219106936 | Ho A Bao | Product Owner | hoabao1@dtu.edu.vn |
 | 3 | 28211406961 | Le Nhat Anh | Developer | anhnhatle1904@gmail.com |
 | 4 | 27211202824 | Vo Le Duy | Developer | duyvole9@gmail.com |
 

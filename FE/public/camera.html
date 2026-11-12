@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MeetNow - Phát Camera</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="ice-config.js"></script>
+<link rel="icon" type="image/png" href="icon.png">
+<style>
+  :root{
+    --bg:#0a1628;
+    --panel:#10203a;
+    --panel2:#15294a;
+    --accent:#2f8fff;
+    --accent2:#1565d8;
+    --text:#e8f1ff;
+    --muted:#7fa3cf;
+    --danger:#ff5b6e;
+    --good:#3ddc97;
+    --radius:14px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;overflow:hidden;}
+  body{
+    font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
+    background:radial-gradient(1200px 800px at 20% -10%, #16335e 0%, var(--bg) 60%);
+    color:var(--text);
+    display:flex;flex-direction:column;
+    height:100vh;height:100dvh;
+  }
+  header{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:16px 24px;
+    background:rgba(23,26,33,0.7);backdrop-filter:blur(10px);
+    border-bottom:1px solid #1d3a63;
+  }
+  .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;}
+  .logo img{width:32px;height:32px;border-radius:8px;object-fit:cover;}
+  .logo .dot{width:12px;height:12px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));}
+  .room-badge{
+    font-size:13px;color:var(--muted);
+    background:var(--panel2);padding:6px 12px;border-radius:20px;
+    display:flex;align-items:center;gap:8px;
+  }
+  .room-badge button{background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px;font-weight:600;}
+
+  /* LOBBY */
+  #lobby{
+    flex:1;display:flex;align-items:center;justify-content:center;
+    padding:24px;overflow-y:auto;min-height:0;
+    background-image:url('background.png');background-size:cover;background-position:center;
+    position:relative;
+  }
+  #lobby::before{content:'';position:absolute;inset:0;background:rgba(10,22,40,0.35);}
+  .card{
+    position:relative;z-index:1;
+    background:rgba(16,32,58,0.92);backdrop-filter:blur(6px);
+    border:1px solid #1d3a63;border-radius:var(--radius);
+    padding:30px;width:100%;max-width:460px;margin:auto;
+    box-shadow:0 20px 60px rgba(0,0,0,0.55);
+  }
+  .card h1{margin:0 0 6px;font-size:22px;text-align:center;}
+  .card p.sub{color:var(--muted);margin:0 0 18px;font-size:14px;text-align:center;}
+  .preview{
+    position:relative;width:100%;aspect-ratio:16/9;
+    background:#000;border-radius:12px;overflow:hidden;border:1px solid #1d3a63;
+  }
+  .preview video{width:100%;height:100%;object-fit:cover;}
+  .preview .ph{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    color:var(--muted);font-size:13px;text-align:center;padding:12px;
+  }
+  label{font-size:13px;color:var(--muted);display:block;margin-bottom:6px;margin-top:14px;}
+  input[type=text],select{
+    width:100%;padding:11px 14px;border-radius:10px;
+    border:1px solid #26456f;background:#0c1b32;color:var(--text);
+    font-size:16px;outline:none;
+  }
+  input[type=text]:focus,select:focus{border-color:var(--accent);}
+  .row2{display:flex;gap:10px;}
+  .row2 > div{flex:1;min-width:0;}
+  .check{display:flex;align-items:center;gap:8px;margin-top:14px;font-size:14px;cursor:pointer;color:var(--text);}
+  .check input{width:18px;height:18px;accent-color:var(--accent);}
+  button.primary{
+    width:100%;margin-top:22px;padding:13px;border:none;border-radius:10px;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));
+    color:#fff;font-weight:600;font-size:15px;cursor:pointer;
+    transition:transform .15s, opacity .15s;
+  }
+  button.primary:hover{opacity:.92;transform:translateY(-1px);}
+  button.primary:disabled{opacity:.5;cursor:not-allowed;transform:none;}
+  .tip{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.5;}
+  .tip b{color:var(--text);}
+  .tip a{color:var(--accent);}
+
+  /* LIVE */
+  #live{flex:1;display:none;flex-direction:column;min-height:0;position:relative;}
+  #liveStage{flex:1;min-height:0;position:relative;background:#000;}
+  #liveVideo{width:100%;height:100%;object-fit:contain;background:#000;}
+  #liveVideo.mirror{transform:scaleX(-1);}
+  .overlay{
+    position:absolute;top:14px;left:14px;display:flex;gap:8px;flex-wrap:wrap;z-index:2;
+  }
+  .pill{
+    background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);
+    padding:6px 12px;border-radius:20px;font-size:13px;font-weight:600;
+    display:flex;align-items:center;gap:6px;
+  }
+  .pill .live-dot{width:9px;height:9px;border-radius:50%;background:var(--danger);animation:blink 1.2s infinite;}
+  .pill .live-dot.wait{background:#f5b942;animation:none;}
+  @keyframes blink{50%{opacity:.3;}}
+  #viewerList{
+    position:absolute;top:56px;left:14px;z-index:2;
+    display:none;flex-direction:column;gap:6px;max-height:50%;overflow-y:auto;
+  }
+  #viewerList.show{display:flex;}
+  #viewerList .pill{font-weight:500;}
+
+  #controls{
+    display:flex;align-items:center;justify-content:center;gap:14px;
+    padding:18px;background:rgba(23,26,33,0.85);border-top:1px solid #1d3a63;
+  }
+  .ctrl-btn{
+    width:52px;height:52px;border-radius:50%;border:1px solid #26456f;
+    background:var(--panel2);color:var(--text);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;font-size:20px;
+    transition:background .15s;
+  }
+  .ctrl-btn:hover{background:#262b3a;}
+  .ctrl-btn.off{background:var(--danger);border-color:var(--danger);}
+  .ctrl-btn.active{background:linear-gradient(135deg,var(--accent),var(--accent2));border-color:var(--accent);}
+  .ctrl-btn.leave{background:var(--danger);border-color:var(--danger);width:auto;border-radius:26px;padding:0 22px;font-size:15px;font-weight:600;gap:8px;}
+
+  #toast{
+    position:fixed;top:18px;left:50%;transform:translateX(-50%);
+    background:var(--panel2);border:1px solid #26456f;padding:10px 18px;
+    border-radius:10px;font-size:13px;display:none;z-index:50;
+    box-shadow:0 8px 24px rgba(0,0,0,0.4);max-width:90vw;text-align:center;
+  }
+  @media(max-width:560px){
+    .card{padding:20px;}
+    header{padding:12px 16px;}
+    .room-badge{font-size:12px;padding:5px 10px;}
+    #controls{gap:10px;padding:14px;}
+    .ctrl-btn{width:46px;height:46px;font-size:18px;}
+    .ctrl-btn.leave{padding:0 16px;font-size:14px;}
+    #liveVideo{object-fit:cover;}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <img src="logo.jpg" alt="Logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-block';">
+    <span class="dot" style="display:none;"></span> MeetNow Camera
+  </div>
+  <div class="room-badge" id="liveBadge" style="display:none;">
+    Mã: <b id="codeLabel"></b>
+    <button onclick="copyViewerLink()">Sao chép link xem</button>
+  </div>
+</header>
+
+<div id="toast"></div>
+
+<!-- LOBBY -->
+<div id="lobby">
+  <div class="card">
+    <h1>Phát camera trực tiếp</h1>
+    <p class="sub">Thiết bị này sẽ làm camera. Người xem mở <b>viewer.html</b> và nhập mã camera để theo dõi.</p>
+
+    <div class="preview">
+      <video id="previewVideo" autoplay playsinline muted></video>
+      <div class="ph" id="previewPh">Đang mở camera...</div>
+    </div>
+
+    <div class="row2">
+      <div>
+        <label>Camera</label>
+        <select id="deviceSelect" onchange="restartPreview()"></select>
+      </div>
+      <div>
+        <label>Chất lượng</label>
+        <select id="qualitySelect" onchange="restartPreview()">
+          <option value="480">480p (tiết kiệm)</option>
+          <option value="720" selected>720p (HD)</option>
+          <option value="1080">1080p (Full HD)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row2">
+      <div>
+        <label>Tên camera</label>
+        <input type="text" id="nameInput" placeholder="VD: Cổng trước">
+      </div>
+      <div>
+        <label>Mã camera</label>
+        <input type="text" id="codeInput" placeholder="VD: cam1 hoặc id camera trong KinderLog" maxlength="64">
+      </div>
+    </div>
+
+    <label class="check"><input type="checkbox" id="audioCheck" onchange="restartPreview()"> Gửi kèm âm thanh (micro)</label>
+
+    <button class="primary" id="startBtn" onclick="startBroadcast()">Bắt đầu phát</button>
+    <div class="tip">Mã camera chỉ gồm chữ thường, số và dấu gạch ngang. Mỗi camera cần một mã riêng — người xem dùng đúng mã này để xem.</div>
+  </div>
+</div>
+
+<!-- LIVE -->
+<div id="live">
+  <div id="liveStage">
+    <video id="liveVideo" autoplay playsinline muted></video>
+    <div class="overlay">
+      <div class="pill" id="statusPill"><span class="live-dot wait" id="liveDot"></span><span id="statusText">Đang kết nối...</span></div>
+      <div class="pill" style="cursor:pointer;" onclick="toggleViewerList()">👁 <span id="viewerCount">0</span> người xem</div>
+    </div>
+    <div id="viewerList"></div>
+  </div>
+  <div id="controls">
+    <button class="ctrl-btn" id="switchBtn" onclick="switchCamera()" title="Đổi camera">🔄</button>
+    <button class="ctrl-btn" id="micBtn" onclick="toggleMic()" title="Bật/tắt micro">🎤</button>
+    <button class="ctrl-btn" id="videoBtn" onclick="toggleVideo()" title="Tạm dừng hình">📷</button>
+    <button class="ctrl-btn" id="mirrorBtn" onclick="toggleMirror()" title="Lật hình xem trước">↔️</button>
+    <button class="ctrl-btn leave" onclick="stopBroadcast()">⏹ Dừng phát</button>
+  </div>
+</div>
+
+<script>
+// Tiền tố peer id dùng chung với viewer.html — phải giống nhau ở cả 2 file
+const CAM_PREFIX = 'meetnow-cam-';
+const SETTINGS_KEY = 'meetnow_camera_settings';
+
+const ICE_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    // TURN servers từ ice-config.js (xem ice-config.example.js)
+    ...(Array.isArray(window.KINDERLOG_ICE_SERVERS) ? window.KINDERLOG_ICE_SERVERS : [])
+  ]
+};
+
+let stream = null, peer = null;
+let viewers = {};          // viewerPeerId -> { conn, call, joinedAt }
+let camName = '', camCode = '';
+let micOn = true, videoOn = true, mirror = true;
+let heartbeatTimer = null, wakeLock = null;
+let videoDevices = [];
+let isLive = false;
+
+function toast(msg, ms=2500){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(t._tm);
+  t._tm = setTimeout(()=> t.style.display='none', ms);
+}
+
+// Mã camera = phần sau tiền tố CAM_PREFIX; dán cả peer id đầy đủ (meetnow-cam-...) cũng được, tiền tố sẽ bị bỏ
+function sanitizeCode(v){
+  return (v||'').toLowerCase().trim().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'')
+    .replace(/^(meetnow-cam-)+/,'').replace(/^-+|-+$/g,'');
+}
+
+function loadSettings(){
+  try{ return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; }catch(e){ return {}; }
+}
+function saveSettings(){
+  try{
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      name: camName, code: camCode,
+      deviceId: document.getElementById('deviceSelect').value,
+      quality: document.getElementById('qualitySelect').value,
+      audio: document.getElementById('audioCheck').checked
+    }));
+  }catch(e){}
+}
+
+// ===== Camera / preview =====
+function buildConstraints(deviceId){
+  const q = parseInt(document.getElementById('qualitySelect').value, 10);
+  const w = { 480:640, 720:1280, 1080:1920 }[q];
+  const video = { width:{ ideal:w }, height:{ ideal:q }, frameRate:{ ideal:25 } };
+  if(deviceId) video.deviceId = { exact: deviceId };
+  else video.facingMode = 'environment'; // mặc định camera sau trên điện thoại
+  return { video, audio: document.getElementById('audioCheck').checked };
+}
+
+function stopStream(s){
+  if(s) s.getTracks().forEach(t=>t.stop());
+}
+
+async function openCamera(deviceId){
+  try{
+    return await navigator.mediaDevices.getUserMedia(buildConstraints(deviceId));
+  }catch(e){
+    // deviceId cũ không còn tồn tại -> thử lại với camera mặc định
+    if(deviceId) return await navigator.mediaDevices.getUserMedia(buildConstraints(null));
+    throw e;
+  }
+}
+
+async function refreshDeviceList(selectedId){
+  const all = await navigator.mediaDevices.enumerateDevices();
+  videoDevices = all.filter(d=>d.kind === 'videoinput');
+  const sel = document.getElementById('deviceSelect');
+  sel.innerHTML = '';
+  videoDevices.forEach((d,i)=>{
+    const o = document.createElement('option');
+    o.value = d.deviceId;
+    o.textContent = d.label || ('Camera ' + (i+1));
+    sel.appendChild(o);
+  });
+  if(selectedId && videoDevices.some(d=>d.deviceId === selectedId)) sel.value = selectedId;
+  document.getElementById('switchBtn').style.display = videoDevices.length > 1 ? '' : 'none';
+}
+
+async function restartPreview(){
+  const ph = document.getElementById('previewPh');
+  const sel = document.getElementById('deviceSelect');
+  stopStream(stream);
+  stream = null;
+  ph.style.display = 'flex';
+  ph.textContent = 'Đang mở camera...';
+  try{
+    stream = await openCamera(sel.value || loadSettings().deviceId);
+    const track = stream.getVideoTracks()[0];
+    const activeId = track && track.getSettings().deviceId;
+    await refreshDeviceList(activeId);
+    document.getElementById('previewVideo').srcObject = stream;
+    ph.style.display = 'none';
+    document.getElementById('startBtn').disabled = false;
+  }catch(e){
+    ph.textContent = 'Không thể truy cập camera: ' + e.message;
+    document.getElementById('startBtn').disabled = true;
+  }
+}
+
+// ===== Phát =====
+function startBroadcast(){
+  if(!stream){ toast('Chưa mở được camera'); return; }
+  camCode = sanitizeCode(document.getElementById('codeInput').value);
+  if(!camCode){ toast('Vui lòng nhập mã camera'); return; }
+  document.getElementById('codeInput').value = camCode;
+  camName = document.getElementById('nameInput').value.trim() || camCode;
+  saveSettings();
+
+  micOn = true; videoOn = true;
+  document.getElementById('lobby').style.display = 'none';
+  document.getElementById('live').style.display = 'flex';
+  document.getElementById('liveBadge').style.display = 'flex';
+  document.getElementById('codeLabel').textContent = camCode;
+  document.getElementById('liveVideo').srcObject = stream;
+  document.getElementById('micBtn').style.display = stream.getAudioTracks().length ? '' : 'none';
+  updateButtons();
+  isLive = true;
+  requestWakeLock();
+  connectPeer();
+}
+
+function setStatus(text, online){
+  document.getElementById('statusText').textContent = text;
+  document.getElementById('liveDot').classList.toggle('wait', !online);
+}
+
+function connectPeer(){
+  if(peer && !peer.destroyed) peer.destroy();
+  setStatus('Đang kết nối...', false);
+  peer = new Peer(CAM_PREFIX + camCode, { debug:1, config: ICE_CONFIG });
+
+  peer.on('open', ()=>{
+    setStatus('ĐANG PHÁT', true);
+    toast('Camera đang phát trực tiếp — mã: ' + camCode);
+  });
+
+  // Viewer mở data connection tới camera -> camera gọi lại viewer kèm luồng hình
+  peer.on('connection', conn=>{
+    conn.on('open', ()=>{
+      dropViewer(conn.peer); // viewer kết nối lại -> bỏ phiên cũ
+      const viewerName = (conn.metadata && conn.metadata.name) || 'Người xem';
+      conn.send({ type:'info', name: camName, code: camCode, audio: stream.getAudioTracks().length > 0 });
+      const call = peer.call(conn.peer, stream, { metadata:{ name: camName, kind:'camera' } });
+      viewers[conn.peer] = { conn, call, name: viewerName };
+      call.on('close', ()=> dropViewer(conn.peer, call));
+      call.on('error', ()=> dropViewer(conn.peer, call));
+      updateViewers();
+    });
+    conn.on('close', ()=> dropViewer(conn.peer, null, conn));
+    conn.on('error', ()=> dropViewer(conn.peer, null, conn));
+  });
+
+  peer.on('error', err=>{
+    console.error(err);
+    if(err.type === 'unavailable-id'){
+      toast('Mã camera "' + camCode + '" đang được dùng ở thiết bị khác. Hãy chọn mã khác.', 5000);
+      stopBroadcast();
+    }else if(err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error'){
+      setStatus('Mất mạng, đang thử lại...', false);
+      setTimeout(()=>{ if(isLive && (!peer || peer.destroyed || peer.disconnected)) connectPeer(); }, 3000);
+    }else if(err.type !== 'peer-unavailable'){
+      toast('Lỗi kết nối: ' + err.type);
+    }
+  });
+
+  peer.on('disconnected', ()=>{
+    if(!isLive) return;
+    setStatus('Mất kết nối, đang kết nối lại...', false);
+    setTimeout(()=>{ if(isLive && peer && !peer.destroyed && peer.disconnected) peer.reconnect(); }, 1000);
+  });
+
+  // Gửi nhịp tim để viewer biết camera vẫn còn sống, đồng thời dọn viewer đã rớt
+  clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(()=>{
+    Object.keys(viewers).forEach(id=>{
+      const v = viewers[id];
+      const pc = v.call && v.call.peerConnection;
+      if(pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed')){
+        dropViewer(id); return;
+      }
+      if(v.conn.open) v.conn.send({ type:'ping', t: Date.now() });
+    });
+  }, 3000);
+}
+
+function dropViewer(id, call, conn){
+  const v = viewers[id];
+  if(!v) return;
+  // chỉ xóa nếu sự kiện thuộc đúng phiên hiện tại (tránh xóa nhầm phiên mới khi viewer kết nối lại)
+  if(call && v.call !== call) return;
+  if(conn && v.conn !== conn) return;
+  delete viewers[id];
+  try{ v.call && v.call.close(); }catch(e){}
+  try{ v.conn && v.conn.close(); }catch(e){}
+  updateViewers();
+}
+
+function updateViewers(){
+  const ids = Object.keys(viewers);
+  document.getElementById('viewerCount').textContent = ids.length;
+  const list = document.getElementById('viewerList');
+  list.innerHTML = '';
+  ids.forEach(id=>{
+    const p = document.createElement('div');
+    p.className = 'pill';
+    p.textContent = '👤 ' + viewers[id].name;
+    list.appendChild(p);
+  });
+}
+function toggleViewerList(){
+  document.getElementById('viewerList').classList.toggle('show');
+}
+
+// Thay track trên mọi kết nối đang mở mà không cần gọi lại
+function replaceTrackForAll(newTrack){
+  Object.values(viewers).forEach(v=>{
+    const pc = v.call && v.call.peerConnection;
+    if(!pc) return;
+    const sender = pc.getSenders().find(s=>s.track && s.track.kind === newTrack.kind);
+    if(sender) sender.replaceTrack(newTrack).catch(err=>console.warn(err));
+  });
+}
+
+async function switchCamera(){
+  if(videoDevices.length < 2) return;
+  const cur = stream.getVideoTracks()[0];
+  const curId = cur && cur.getSettings().deviceId;
+  const idx = videoDevices.findIndex(d=>d.deviceId === curId);
+  const next = videoDevices[(idx + 1) % videoDevices.length];
+  try{
+    // Một số điện thoại không cho mở 2 camera cùng lúc -> dừng camera cũ trước
+    if(cur) cur.stop();
+    const q = parseInt(document.getElementById('qualitySelect').value, 10);
+    const ns = await navigator.mediaDevices.getUserMedia({
+      video:{ deviceId:{ exact: next.deviceId }, width:{ ideal:{480:640,720:1280,1080:1920}[q] }, height:{ ideal:q } }
+    });
+    const newTrack = ns.getVideoTracks()[0];
+    newTrack.enabled = videoOn;
+    if(cur) stream.removeTrack(cur);
+    stream.addTrack(newTrack);
+    replaceTrackForAll(newTrack);
+    document.getElementById('liveVideo').srcObject = stream;
+    document.getElementById('deviceSelect').value = next.deviceId;
+    saveSettings();
+    toast('Đã chuyển sang: ' + (next.label || 'camera khác'));
+  }catch(e){
+    toast('Không thể đổi camera: ' + e.message);
+  }
+}
+
+function toggleMic(){
+  micOn = !micOn;
+  stream.getAudioTracks().forEach(t=> t.enabled = micOn);
+  updateButtons();
+}
+function toggleVideo(){
+  videoOn = !videoOn;
+  stream.getVideoTracks().forEach(t=> t.enabled = videoOn);
+  updateButtons();
+}
+function toggleMirror(){
+  mirror = !mirror;
+  updateButtons();
+}
+function updateButtons(){
+  const micBtn = document.getElementById('micBtn');
+  micBtn.classList.toggle('off', !micOn);
+  micBtn.textContent = micOn ? '🎤' : '🔇';
+  const videoBtn = document.getElementById('videoBtn');
+  videoBtn.classList.toggle('off', !videoOn);
+  videoBtn.textContent = videoOn ? '📷' : '🚫';
+  document.getElementById('mirrorBtn').classList.toggle('active', mirror);
+  document.getElementById('liveVideo').classList.toggle('mirror', mirror);
+}
+
+function stopBroadcast(){
+  isLive = false;
+  clearInterval(heartbeatTimer);
+  Object.keys(viewers).forEach(id=> dropViewer(id));
+  if(peer && !peer.destroyed) peer.destroy();
+  peer = null;
+  releaseWakeLock();
+  document.getElementById('live').style.display = 'none';
+  document.getElementById('liveBadge').style.display = 'none';
+  document.getElementById('lobby').style.display = 'flex';
+  restartPreview();
+}
+
+// ===== Giữ màn hình luôn sáng khi đang phát (điện thoại) =====
+async function requestWakeLock(){
+  try{
+    if('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+  }catch(e){ /* không hỗ trợ -> bỏ qua */ }
+}
+function releaseWakeLock(){
+  try{ if(wakeLock) wakeLock.release(); }catch(e){}
+  wakeLock = null;
+}
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState !== 'visible' || !isLive) return;
+  requestWakeLock();
+  if(peer && peer.disconnected && !peer.destroyed) peer.reconnect();
+});
+
+window.addEventListener('beforeunload', ()=>{ if(peer) peer.destroy(); });
+
+function viewerUrl(){
+  return location.href.split(/[?#]/)[0].replace(/camera\.html$/i, 'viewer.html') + '?cam=' + encodeURIComponent(camCode);
+}
+function copyViewerLink(){
+  const url = viewerUrl();
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(()=> toast('Đã sao chép link xem camera!'));
+  }else{
+    prompt('Sao chép link này:', url);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', ()=>{
+  const s = loadSettings();
+  const params = new URLSearchParams(location.search);
+  document.getElementById('nameInput').value = s.name || '';
+  document.getElementById('codeInput').value = params.get('cam') || s.code || 'cam1';
+  if(s.quality) document.getElementById('qualitySelect').value = s.quality;
+  document.getElementById('audioCheck').checked = !!s.audio;
+  document.getElementById('codeInput').addEventListener('blur', e=> e.target.value = sanitizeCode(e.target.value));
+
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    document.getElementById('previewPh').textContent = 'Trình duyệt không hỗ trợ camera (cần mở qua HTTPS hoặc localhost).';
+    document.getElementById('startBtn').disabled = true;
+    return;
+  }
+  restartPreview();
+});
+</script>
+</body>
+</html>
